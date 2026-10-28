@@ -678,6 +678,15 @@ static void controlUpdateGameFunctions(void)
     controlUpdateFlagsFromButtons(CONTROL_ButtonFlags);
     controlUpdateFlagsFromAxes(CONTROL_ButtonFlags);
 
+#ifdef __ANDROID__
+    // The Android touch overlay writes game-function bits directly to
+    // CONTROL_ButtonState. Merge them into the regular function flags before
+    // CONTROL_ButtonState is consumed below; otherwise touch buttons appear
+    // to work in menus (SDL keys) but never reach gameplay.
+    for (int i = 0; i < NUMGAMEFUNCTIONS; ++i)
+        CONTROL_ButtonFlags[i] |= (CONTROL_ButtonState >> i) & 1;
+#endif
+
     CONTROL_ButtonHeldState = CONTROL_ButtonState;
     CONTROL_ButtonState = 0;
 
@@ -695,11 +704,7 @@ static void controlUpdateGameFunctions(void)
     memset(CONTROL_ButtonFlags, 0, sizeof(CONTROL_ButtonFlags));
 }
 
-void CONTROL_GetInput(ControlInfo *info)
-{
-#ifdef __ANDROID__
-    CONTROL_Android_PollDevices(info);
-#endif
+void CONTROL_GetInput(ControlInfo *info) {
     controlPollDevices(info);
     controlUpdateGameFunctions();
     inputchecked = 1;

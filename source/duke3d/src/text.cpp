@@ -99,6 +99,37 @@ void G_InitText()
     }
 }
 
+#if defined(__ANDROID__) && defined(POLYMER)
+void G_PrecacheMenuFonts(void)
+{
+    if (videoGetRenderMode() != REND_POLYMER) return;
+    uint32_t const start = timerGetTicks();
+    MenuFont_t const *fonts[] = { &MF_Redfont, &MF_Bluefont, &MF_Minifont };
+    int count = 0;
+    for (auto const font : fonts)
+    {
+        TileFontPtr_t const tilefont = tilefontFind(font->tilenum);
+        uint8_t const palettes[] = { font->pal, font->pal_selected, font->pal_deselected,
+            font->pal_disabled, font->pal_selected_right, font->pal_deselected_right,
+            font->pal_disabled_right, 4 };
+        for (int c = '!'; c <= '~'; ++c)
+        {
+            int const tile = G_GetStringTileASCII(tilefont, font->tilenum, c, font->textflags);
+            for (unsigned p = 0; p < ARRAY_SIZE(palettes); ++p)
+            {
+                bool duplicate = false;
+                for (unsigned previous = 0; previous < p; ++previous)
+                    duplicate |= palettes[previous] == palettes[p];
+                if (duplicate) continue;
+                polymer_precacheuitile(tile, palettes[p]);
+                ++count;
+            }
+        }
+    }
+    LOG_F(INFO, "Android menu font precache: %d tile/palette requests in %u ms", count, timerGetTicks()-start);
+}
+#endif
+
 // assign the character's tilenum
 static int32_t G_GetStringTileLegacy(int32_t font, char c, int32_t f)
 {
@@ -550,7 +581,15 @@ void P_DoQuote(int32_t q, DukePlayer_t *p)
 
     if (EDUKE32_PREDICT_FALSE(apStrings[q] == NULL))
     {
+#ifdef __ANDROID__
+        static uint8_t reported[MAXQUOTES];
+        if ((unsigned)q < MAXQUOTES && !reported[q]) {
+            reported[q] = 1;
+            OSD_Printf(OSD_ERROR "%s null quote %d (further repeats suppressed)\n", "text:", q);
+        }
+#else
         OSD_Printf(OSD_ERROR "%s %d null quote %d\n", "text:", __LINE__, q);
+#endif
         return;
     }
 

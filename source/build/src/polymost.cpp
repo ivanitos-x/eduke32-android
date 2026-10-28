@@ -27,6 +27,8 @@ int32_t r_enablepolymost2 = 0;
 
 #ifdef USE_GLEXT
 int32_t r_vbocount = 64;
+#endif
+#if defined(USE_GLEXT) || defined(POLYMER)
 int32_t r_glowmapping = 1;
 int32_t r_detailmapping = 1;
 #endif
@@ -118,6 +120,16 @@ static int32_t drawpolyVertsSubBufferIndex = 0;
 static GLsync drawpolyVertsSync[3] = { 0 };
 static float defaultDrawpolyVertsArray[MAX_DRAWPOLY_VERTS*5];
 static float* drawpolyVerts = defaultDrawpolyVertsArray;
+#if defined(__ANDROID__) && defined(POLYMER)
+int32_t pr_hudstream = 1;
+int32_t pr_hudstatebatch = 1;
+static bool androidHudClientArraysReady;
+static int androidHudSpriteDepth;
+struct AndroidHudSpriteScope {
+    AndroidHudSpriteScope() { ++androidHudSpriteDepth; }
+    ~AndroidHudSpriteScope() { --androidHudSpriteDepth; }
+};
+#endif
 
 struct glfiltermodes glfiltermodes[NUMGLFILTERMODES] = { { "GL_NEAREST",                GL_NEAREST,                GL_NEAREST },
                                                          { "GL_LINEAR",                 GL_LINEAR,                 GL_LINEAR  },
@@ -559,6 +571,9 @@ static void Polymost_DetermineTextureFormatSupport(void);
 // reset vertex pointers to polymost default
 void polymost_resetVertexPointers()
 {
+#if defined(__ANDROID__) && defined(POLYMER)
+    androidHudClientArraysReady=false;
+#endif
     buildgl_bindBuffer(GL_ARRAY_BUFFER, drawpolyVertsID);
 
     glVertexPointer(3, GL_FLOAT, 5 * sizeof(float), 0);
@@ -909,10 +924,12 @@ void polymost_initdrawpoly(void)
 
     glGenBuffers(1, &drawpolyVertsID);
 
-    // reset the sync objects, as old ones we had from any last GL context are gone now
-    for (int i=0; i<ARRAY_SSIZE(drawpolyVertsSync); i++)
-        if (glIsSync(drawpolyVertsSync[i]))
-            glDeleteSync(drawpolyVertsSync[i]);
+    // Sync functions are only available when persistent stream buffering is supported.
+    // Android GLES/GL4ES disables that path, so do not call glIsSync/glDeleteSync there.
+    if (persistentStreamBuffer)
+        for (int i=0; i<ARRAY_SSIZE(drawpolyVertsSync); i++)
+            if (drawpolyVertsSync[i] && glIsSync(drawpolyVertsSync[i]))
+                glDeleteSync(drawpolyVertsSync[i]);
 
     Bmemset(drawpolyVertsSync, 0, sizeof(drawpolyVertsSync));
 
@@ -3166,8 +3183,48 @@ void polymost_bufferVert(vec3f_t const v, vec2f_t const t)
     *(vec2f_t*)(&drawpolyVerts[off+3]) = t;
 }
 
+#if defined(__ANDROID__) && defined(POLYMER)
+bool polymost_prepareHudClientArrays(void)
+{
+    if (!pr_hudstatebatch || !pr_hudstream || !androidHudSpriteDepth || !polymer_textbatch_depth || persistentStreamBuffer
+        || videoGetRenderMode() != REND_POLYMER) {
+        androidHudClientArraysReady=false;
+        return false;
+    }
+    // A screen-text batch contains only synchronous flat glyph draws. The
+    // client buffer address is stable; each glyph changes its contents only.
+    if (!androidHudClientArraysReady) {
+        buildgl_bindBuffer(GL_ARRAY_BUFFER,0);
+        glClientActiveTexture(GL_TEXTURE0);
+        glVertexPointer(3,GL_FLOAT,5*sizeof(float),drawpolyVerts);
+        glTexCoordPointer(2,GL_FLOAT,5*sizeof(float),drawpolyVerts+3);
+        androidHudClientArraysReady=true;
+    }
+    return true;
+}
+#endif
+
 void polymost_finishBufferedDrawing(int mode)
 {
+#if defined(__ANDROID__) && defined(POLYMER)
+    if (pr_hudstream && androidHudSpriteDepth && !persistentStreamBuffer && videoGetRenderMode() == REND_POLYMER)
+    {
+        // Tiny HUD polygons do not need a streaming GPU VBO. Repeated updates
+        // to that shared buffer serialize the GL4ES/Mali path for every glyph.
+        // GL4ES consumes these client arrays synchronously at the draw call.
+        bool const prepared=polymost_prepareHudClientArrays();
+        if (!prepared) {
+            buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+            glClientActiveTexture(GL_TEXTURE0);
+            glVertexPointer(3, GL_FLOAT, 5*sizeof(float), drawpolyVerts);
+            glTexCoordPointer(2, GL_FLOAT, 5*sizeof(float), drawpolyVerts+3);
+        }
+        glDrawArrays(mode, 0, drawpolyVertsCnt);
+        drawpolyVertsCnt=0;
+        if (!prepared || !polymer_textbatch_depth) polymost_resetVertexPointers();
+        return;
+    }
+#endif
     if (!persistentStreamBuffer)
         glBufferSubData(GL_ARRAY_BUFFER, drawpolyVertsOffset * sizeof(float) * 5, drawpolyVertsCnt * sizeof(float) * 5, drawpolyVerts);
 
@@ -9131,22 +9188,65 @@ void polymost_dorotatespritemodel(int32_t sx, int32_t sy, int32_t z, int16_t a, 
     gstang = ogstang;
 }
 
+#if defined(__ANDROID__) && defined(POLYMER)
+static bool androidTextMatricesReady;
+static void polymost_restoretextmatrices(void)
+{
+    if (!androidTextMatricesReady) return;
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    androidTextMatricesReady = false;
+}
+void polymost_begintextbatch(void)
+{
+    if (!polymer_textbatch_depth) { androidTextMatricesReady = false; androidHudClientArraysReady=false; }
+    polymer_begintextbatch();
+}
+void polymost_endtextbatch(void)
+{
+    if (polymer_textbatch_depth == 1) { polymost_restoretextmatrices(); androidHudClientArraysReady=false; }
+    polymer_endtextbatch();
+}
+#endif
 void polymost_dorotatesprite(int32_t sx, int32_t sy, int32_t z, int16_t a, int16_t picnum,
                              int8_t dashade, char dapalnum, int32_t dastat, uint8_t daalpha, uint8_t dablend,
                              int32_t cx1, int32_t cy1, int32_t cx2, int32_t cy2, int32_t uniqid)
 {
     if (usemodels && tile2model[picnum].hudmem[(dastat&4)>>2])
     {
+#if defined(__ANDROID__) && defined(POLYMER)
+        if (polymer_textbatch_depth)
+        {
+            polymost_restoretextmatrices();
+            androidHudClientArraysReady=false;
+            buildgl_useShaderProgram(0);
+            buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+#endif
         polymost_dorotatespritemodel(sx, sy, z, a, picnum, dashade, dapalnum, dastat, daalpha, dablend, uniqid);
         return;
     }
 
+#if defined(__ANDROID__) && defined(POLYMER)
+    AndroidHudSpriteScope hudSpriteScope;
+#endif
     buildgl_outputDebugMessage(3, "polymost_dorotatesprite(sx:%d, sy:%d, z:%d, a:%hd, picnum:%hd, dashade:%hhd, dapalnum:%hhu, dastat:%d, daalpha:%hhu, dablend:%hhu, cx1:%d, cy1:%d, cx2:%d, cy2:%d, uniqid:%d)",
                                   sx, sy, z, a, picnum, dashade, dapalnum, dastat, daalpha, dablend, cx1, cy1, cx2, cy2, uniqid);
 
     buildgl_setViewport(0,0,xdim,ydim);
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
+#if defined(__ANDROID__) && defined(POLYMER)
+    bool const textBatch = polymer_textbatch_depth > 0;
+    bool const setupMatrices = !textBatch || !androidTextMatricesReady;
+#else
+    bool const setupMatrices = true;
+#endif
+    if (setupMatrices)
+    {
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+    }
 
     globvis = 0;
     globvis2 = 0;
@@ -9194,10 +9294,16 @@ void polymost_dorotatesprite(int32_t sx, int32_t sy, int32_t z, int16_t a, int16
     m[2][2] = 1.0001f;
     m[3][2] = 1 - m[2][2];
 
-    glLoadMatrixf(&m[0][0]);
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
+    if (setupMatrices)
+    {
+        glLoadMatrixf(&m[0][0]);
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadIdentity();
+#if defined(__ANDROID__) && defined(POLYMER)
+        if (textBatch) androidTextMatricesReady = true;
+#endif
+    }
 
     buildgl_setDisabled(GL_DEPTH_TEST);
 
@@ -9393,9 +9499,15 @@ void polymost_dorotatesprite(int32_t sx, int32_t sy, int32_t z, int16_t a, int16
         pr_normalmapping = oldnormalmapping;
     }
 #endif
-    glPopMatrix();
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
+#if defined(__ANDROID__) && defined(POLYMER)
+    if (!textBatch)
+#endif
+    {
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+    }
 
     globalpicnum = ogpicnum;
     globalshade  = ogshade;
@@ -10098,6 +10210,18 @@ void polymost_initosdfuncs(void)
         { "r_pr_hudxadd", "overriden HUD xadd; see r_pr_overridehud", (void *) &pr_hudxadd, CVAR_FLOAT | CVAR_NOSAVE, -100, 100 },
         { "r_pr_hudyadd", "overriden HUD yadd; see r_pr_overridehud", (void *) &pr_hudyadd, CVAR_FLOAT | CVAR_NOSAVE, -100, 100 },
         { "r_pr_hudzadd", "overriden HUD zadd; see r_pr_overridehud", (void *) &pr_hudzadd, CVAR_FLOAT | CVAR_NOSAVE, -100, 100 },
+#ifdef __ANDROID__
+        { "r_pr_fastlight", "Optimize flat indexed Polymer lighting math on Android", (void *)&pr_fastlight, CVAR_BOOL, 0, 1 },
+        { "r_pr_lightstatecache", "Skip unchanged legacy light state on Android", (void *)&pr_lightstatecache, CVAR_BOOL, 0, 1 },
+        { "r_pr_packedpalette", "Use composed palette/shade lookup textures in Android Polymer", (void *)&pr_packedpalette, CVAR_BOOL, 0, 1 },
+        { "r_pr_hudstatebatch", "Retain flat HUD client-array state within screen-text batches", (void *)&pr_hudstatebatch, CVAR_BOOL, 0, 1 },
+        { "r_pr_hudstream", "Avoid per-glyph shared VBO updates for Android Polymer HUD", (void *)&pr_hudstream, CVAR_BOOL, 0, 1 },
+        { "r_pr_bigcores", "Prefer high-capacity CPU cores for the render thread (experimental)", (void *)&pr_bigcores, CVAR_BOOL | CVAR_NOSAVE, 0, 1 },
+        { "r_pr_adpf", "Report render workload to Android performance scheduler", (void *)&pr_adpf, CVAR_BOOL, 0, 1 },
+        { "r_pr_textbatch", "batch Polymer text GL state on Android", (void *)&pr_textbatch, CVAR_BOOL, 0, 1 },
+        { "r_pr_lightscissor", "Restrict extra Polymer light passes to conservative screen bounds", (void *)&pr_lightscissor, CVAR_BOOL, 0, 1 },
+        { "r_pr_workers", "Polymer CPU workers: 0 serial, 1 helper, 2 adaptive pair", (void *)&pr_workers, CVAR_INT, 0, 2 },
+#endif
         { "r_pr_lighting", "enable/disable dynamic lights - restarts renderer", (void *) &pr_lighting, CVAR_INT | CVAR_RESTARTVID, 0, 2 },
         { "r_pr_maxlightpasses", "the maximal amount of lights a single object can by affected by", (void *) &r_pr_maxlightpasses, CVAR_INT|CVAR_FUNCPTR, 0, PR_MAXPLANELIGHTS },
         { "r_pr_maxlightpriority", "lowering that value removes less meaningful lights from the scene", (void *) &pr_maxlightpriority, CVAR_INT, 0, PR_MAXLIGHTPRIORITY },

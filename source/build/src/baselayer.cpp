@@ -352,7 +352,13 @@ void mouseReadPos(int32_t *x, int32_t *y)
 
 int32_t mouseReadAbs(vec2_t * const pResult, vec2_t const * const pInput)
 {
+#ifdef __ANDROID__
+    // Touch menu coordinates remain valid while relative gameplay mouse input
+    // is disabled. A touchscreen also does not provide mouse enter/leave events.
+    if (!appactive || (osd && osd->flags & OSD_CAPTURE))
+#else
     if (!g_mouseEnabled || !appactive || !g_mouseInsideWindow || (osd && osd->flags & OSD_CAPTURE))
+#endif
         return 0;
 
     int32_t const xwidth = max(scale(240<<16, xdim, ydim), 320<<16);
@@ -862,7 +868,7 @@ int32_t baselayer_init(void)
 
 void maybe_redirect_outputs(void)
 {
-#if !(defined __APPLE__ && defined __BIG_ENDIAN__)
+#if !defined(__ANDROID__) && !(defined __APPLE__ && defined __BIG_ENDIAN__)
     char *argp;
 
     // pipe standard outputs to files
@@ -883,9 +889,17 @@ void maybe_redirect_outputs(void)
 #endif
 }
 
+#ifdef __ANDROID__
+extern "C" double AndroidGetDisplayRefreshRate(void);
+#endif
 int engineFPSLimit(bool const throttle)
 {
     static uint64_t lastFrameTicks;
+#ifdef __ANDROID__
+    // Android can change panel rate without resizing the SDL window.
+    double const actualRefresh = AndroidGetDisplayRefreshRate();
+    if (actualRefresh >= 30.0 && actualRefresh <= 240.0) refreshfreq = actualRefresh;
+#endif
     static uint64_t lastDelay;
 
     if (r_maxfps == -2)
@@ -907,5 +921,11 @@ int engineFPSLimit(bool const throttle)
         return true;
     }
 
+#ifdef __ANDROID__
+    // Keep pumping menu input each millisecond instead of busy-spinning for
+    // the entire frame interval. Leave the last 2 ms and game loop unchanged.
+    if (throttle && g_frameDelay - (frameTicks - lastFrameTicks) > timerGetNanoTickRate() / 500)
+        idle(1);
+#endif
     return false;
 }

@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 //-------------------------------------------------------------------------
 
+#include <cmath>
 #include "compat.h"
 #include "sdl_inc.h"
 #include "baselayer.h"
@@ -54,6 +55,7 @@ extern int SDL_SendMouseButton(SDL_Window * window, Uint32 mouseID, Uint8 state,
 
 #include "in_android.h"
 #include <android/log.h>
+#include <atomic>
 
 #if defined __GNUC__
 # pragma GCC diagnostic push
@@ -66,12 +68,82 @@ static char sdl_text[2];
 
 droidinput_t droidinput;
 
+// The Android UI and the SDL game loop run on different threads. A release
+// must not race with polling or get overwritten by another button's update.
+static std::atomic<uint64_t> androidHeldButtons { 0 };
+static std::atomic<uint64_t> androidStickyButtons { 0 };
+static std::atomic<int> androidPublishedTouchMode { TOUCH_SCREEN_BLANK_TAP };
+static std::atomic<double> lookYawJoystickTarget { 0.0 }, lookPitchJoystickTarget { 0.0 };
+static std::atomic<double> androidPendingYaw { 0.0 }, androidPendingPitch { 0.0 };
+static std::atomic<bool> androidLookResetPending { false };
+static std::atomic<uint32_t> androidMoveAxes { 0 };
+
+void AndroidMove(float strafe, float forward)
+{
+    if (!std::isfinite(strafe) || !std::isfinite(forward)) return;
+    float const magnitude = sqrtf(strafe*strafe + forward*forward);
+    if (magnitude > 1.f) { strafe /= magnitude; forward /= magnitude; }
+    auto const x = (int16_t)lrintf(strafe * 32767.f);
+    auto const y = (int16_t)lrintf(forward * 32767.f);
+    androidMoveAxes.store(uint32_t(uint16_t(x)) | (uint32_t(uint16_t(y)) << 16), std::memory_order_relaxed);
+}
+
+void AndroidMovement(float *strafe, float *forward)
+{
+    uint32_t const axes = androidMoveAxes.load(std::memory_order_relaxed);
+    *strafe = int16_t(axes & 0xffff) / 32767.f;
+    *forward = int16_t(axes >> 16) / 32767.f;
+}
+
+int AndroidPublishedTouchMode(void)
+{
+    return androidPublishedTouchMode.load(std::memory_order_relaxed);
+}
+
+void AndroidPublishTouchMode(void)
+{
+    // Called by the game thread; Java reads only this scalar snapshot.
+    int mode = TOUCH_SCREEN_BLANK_TAP;
+    if (g_player && (unsigned)myconnectindex < MAXPLAYERS && g_player[myconnectindex].ps)
+        mode = AndroidRead(R_TOUCH_MODE);
+    androidPublishedTouchMode.store(mode, std::memory_order_relaxed);
+}
+
+static void AndroidAccumulateLook(std::atomic<double> &target, double delta)
+{
+    if (!std::isfinite(delta)) return;
+    double previous = target.load(std::memory_order_relaxed);
+    while (!target.compare_exchange_weak(previous, previous + delta, std::memory_order_relaxed)) { }
+}
+
+uint64_t AndroidHeldButtons(void)
+{
+    return androidHeldButtons.load();
+}
+
+void AndroidResetButtons(void)
+{
+    androidMoveAxes.store(0, std::memory_order_relaxed);
+    androidHeldButtons.store(0);
+    androidStickyButtons.store(0);
+    lookYawJoystickTarget.store(0.0, std::memory_order_relaxed);
+    lookPitchJoystickTarget.store(0.0, std::memory_order_relaxed);
+    androidPendingYaw.store(0.0, std::memory_order_relaxed);
+    androidPendingPitch.store(0.0, std::memory_order_relaxed);
+    androidLookResetPending.store(true, std::memory_order_relaxed);
+}
+
 void AndroidTimer(int tics) { G_InitTimer(tics);  }
 
 int AndroidKeyEvent(int state, int code,int unicode)
 {
     LOGI("AndroidKeyEvent %d %d %d",state,(SDL_Scancode)code,unicode);
-    SDL_SendKeyboardKey(state ? SDL_PRESSED : SDL_RELEASED, (SDL_Scancode)code);
+    SDL_Event event = {};
+    event.type = state ? SDL_KEYDOWN : SDL_KEYUP;
+    event.key.state = state ? SDL_PRESSED : SDL_RELEASED;
+    event.key.keysym.scancode = (SDL_Scancode)code;
+    event.key.keysym.sym = SDL_GetKeyFromScancode((SDL_Scancode)code);
+    SDL_PushEvent(&event);
     SDL_EventState(SDL_TEXTINPUT, SDL_ENABLE);
 
     // if (code == 42)
@@ -84,7 +156,10 @@ int AndroidKeyEvent(int state, int code,int unicode)
             sdl_text[0] = unicode;
             sdl_text[1] = 0;
 
-            int posted = SDL_SendKeyboardText((const char*)sdl_text);
+            SDL_Event textEvent = {};
+            textEvent.type = SDL_TEXTINPUT;
+            SDL_strlcpy(textEvent.text.text, sdl_text, sizeof(textEvent.text.text));
+            int posted = SDL_PushEvent(&textEvent);
             LOGI("posted = %d",posted);
         }
 
@@ -97,12 +172,21 @@ int AndroidKeyEvent(int state, int code,int unicode)
 
 void AndroidMouseMenu(float x,float y)
 {
-    SDL_SendMouseMotion(NULL,0,0,x,y);
+    SDL_Event event = {};
+    event.type = SDL_MOUSEMOTION;
+    event.motion.x = (int)x;
+    event.motion.y = (int)y;
+    SDL_PushEvent(&event);
 }
 
 void AndroidMouseMenuButton(int state,int button)
 {
-    SDL_SendMouseButton(NULL, SDL_TOUCH_MOUSEID, state?SDL_PRESSED:SDL_RELEASED, SDL_BUTTON_LEFT);
+    SDL_Event event = {};
+    event.type = state ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+    event.button.which = SDL_TOUCH_MOUSEID;
+    event.button.button = button;
+    event.button.state = state ? SDL_PRESSED : SDL_RELEASED;
+    SDL_PushEvent(&event);
 }
 
 void changeActionState(int state, int action)
@@ -110,13 +194,13 @@ void changeActionState(int state, int action)
     if (state)
     {
         //BUTTONSET(action,1);
-        droidinput.functionSticky  |= ((uint64_t)1<<((uint64_t)(action)));
-        droidinput.functionHeld    |= ((uint64_t)1<<((uint64_t)(action)));
+        androidHeldButtons.fetch_or(uint64_t(1) << action);
+        androidStickyButtons.fetch_or(uint64_t(1) << action);
         return;
     }
 
     //BUTTONCLEAR(action);
-    droidinput.functionHeld  &= ~((uint64_t) 1<<((uint64_t) (action)));
+    androidHeldButtons.fetch_and(~(uint64_t(1) << action));
 }
 
 void AndroidAction(int state, int action)
@@ -183,47 +267,53 @@ void AndroidAction(int state, int action)
     }
 }
 
-int const deadRegion = 0.3;
+float const deadRegion = 0.15f;
+
 
 float analogCalibrate(float v)
 {
-    float rv = 0;
-
-    if (v > deadRegion) rv = (v - deadRegion) * (v - deadRegion);
-    else if (-v > deadRegion) rv = -(-v - deadRegion) * (-v - deadRegion);
-
-    return rv;
+    float const magnitude = fabsf(v);
+    if (magnitude <= deadRegion)
+        return 0.f;
+    float const calibrated = (magnitude - deadRegion) / (1.f - deadRegion);
+    return copysignf(calibrated, v);
 }
 
 //Need these NAN check as not cumulative.
-void AndroidMove(float fwd, float strafe)
-{
-    if (!ud.auto_run)
-    {
-        fwd *= 0.5f;
-        strafe *= 0.5f;
-    }
-
-    if (!isnan(fwd))
-        droidinput.forwardmove = fclamp2(analogCalibrate(fwd), -1.f, 1.f);
-
-    if (!isnan(strafe))
-        droidinput.sidemove    = fclamp2(analogCalibrate(strafe),    -1.f, 1.f);
-}
-
 void AndroidLook(float yaw, float pitch)
 {
-    droidinput.pitch += pitch;
-    droidinput.yaw   += yaw;
+    AndroidAccumulateLook(androidPendingPitch, pitch);
+    AndroidAccumulateLook(androidPendingYaw, yaw);
 }
 
 void AndroidLookJoystick(float yaw, float pitch)
 {
     if (!isnan(pitch))
-        droidinput.pitch_joystick = analogCalibrate(pitch);
+        lookPitchJoystickTarget.store(analogCalibrate(pitch), std::memory_order_relaxed);
 
     if (!isnan(yaw))
-        droidinput.yaw_joystick   = analogCalibrate(yaw);
+        lookYawJoystickTarget.store(analogCalibrate(yaw), std::memory_order_relaxed);
+}
+
+static int android_pause_owned = 0;
+
+extern "C" void AndroidPauseGame(int paused)
+{
+    if (paused) AndroidClosePerformanceSession();
+    if (paused && !android_pause_owned && !ud.pause_on)
+    {
+        ud.pause_on = 1;
+        android_pause_owned = 1;
+    }
+    else if (!paused && android_pause_owned)
+    {
+        ud.pause_on = 0;
+        android_pause_owned = 0;
+    }
+
+    int const shouldPause = ud.pause_on != 0;
+    S_PauseSounds(shouldPause);
+    S_PauseMusic(shouldPause);
 }
 
 void AndroidOSD(const char * cmd)
@@ -250,7 +340,7 @@ int32_t AndroidRead(portableread_t r)
         else if (consoleShown)
             rv = TOUCH_SCREEN_CONSOLE;
         else if ((g_player[myconnectindex].ps->gm & MODE_MENU) == MODE_MENU && g_currentMenu != MENU_MAIN)
-            rv = (m_currentMenu->type == Verify && totalclock > (m_animation.length + m_animation.start)) ? TOUCH_SCREEN_YES_NO : TOUCH_SCREEN_MENU;
+            rv = (m_currentMenu && m_currentMenu->type == Verify && totalclock > (m_animation.length + m_animation.start)) ? TOUCH_SCREEN_YES_NO : TOUCH_SCREEN_MENU;
         else if ((g_player[myconnectindex].ps->gm & MODE_MENU) == MODE_MENU && g_currentMenu == MENU_MAIN)
             rv = TOUCH_SCREEN_MENU_NOBACK;
 /*
@@ -327,7 +417,7 @@ void CONTROL_Android_SetLastWeapon(int w)
 
 void CONTROL_Android_ClearButton(int32_t whichbutton)
 {
-    droidinput.functionHeld  &= ~((uint64_t)1<<((uint64_t)(whichbutton)));
+    androidHeldButtons.fetch_and(~(uint64_t(1) << whichbutton));
 }
 
 void CONTROL_Android_PollDevices(ControlInfo *info)
@@ -335,16 +425,23 @@ void CONTROL_Android_PollDevices(ControlInfo *info)
     //LOGI("CONTROL_Android_PollDevices %f %f",forwardmove,sidemove);
     //LOGI("CONTROL_Android_PollDevices %f %f",droidinput.pitch,droidinput.yaw);
 
-    info->dz = (int32_t)nearbyintf(-droidinput.forwardmove * ANDROIDMOVEFACTOR);
-    info->dx = (int32_t)nearbyintf(droidinput.sidemove * ANDROIDMOVEFACTOR) >> 5;
+    info->dz = info->dx = 0;
+    if (androidLookResetPending.exchange(false, std::memory_order_relaxed))
+        droidinput.pitch_joystick = droidinput.yaw_joystick = 0.0;
+    droidinput.pitch = androidPendingPitch.exchange(0.0, std::memory_order_relaxed);
+    droidinput.yaw = androidPendingYaw.exchange(0.0, std::memory_order_relaxed);
+    // Smooth touch sampling jitter while keeping the stick responsive.
+    droidinput.pitch_joystick += (lookPitchJoystickTarget.load(std::memory_order_relaxed) * droidinput.pitch_sens / 5.f - droidinput.pitch_joystick) * 0.45;
+    droidinput.yaw_joystick += (lookYawJoystickTarget.load(std::memory_order_relaxed) * droidinput.yaw_sens / 5.f - droidinput.yaw_joystick) * 0.45;
     info->dpitch =
-    (int32_t)nearbyintf(droidinput.pitch * ANDROIDLOOKFACTOR + droidinput.pitch_joystick * ANDROIDPITCHFACTORJOYSTICK);
+    (int32_t)nearbyintf(droidinput.pitch * ANDROIDLOOKFACTOR + droidinput.pitch_joystick * ANDROIDPITCHFACTORJOYSTICK * 4.f);
     info->dyaw =
-    (int32_t)nearbyintf(-droidinput.yaw * ANDROIDLOOKFACTOR - droidinput.yaw_joystick * ANDROIDYAWFACTORJOYSTICK);
+    (int32_t)nearbyintf(-droidinput.yaw * ANDROIDLOOKFACTOR - droidinput.yaw_joystick * ANDROIDYAWFACTORJOYSTICK * 2.5f);
 
     droidinput.pitch = droidinput.yaw = 0.f;
+    droidinput.functionHeld = androidHeldButtons.load();
+    droidinput.functionSticky = androidStickyButtons.exchange(0);
     CONTROL_ButtonState = droidinput.functionSticky | droidinput.functionHeld;
-    droidinput.functionSticky = 0;
 
     //LOGI("poll state = 0x%016llX",CONTROL_ButtonState);
 }

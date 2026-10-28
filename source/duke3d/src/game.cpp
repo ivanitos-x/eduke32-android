@@ -4307,12 +4307,14 @@ PALONLY:
                 }
             }
 
-            t->picnum += frameOffset + apScript[scrofs_action + ACTION_STARTFRAME] + viewtype*curframe;
+            // Before r8787 a negative viewtype inverted direction, not the frame stride.
+            int const frameStride = g_bloodCMCompat ? l : viewtype;
+            t->picnum += frameOffset + apScript[scrofs_action + ACTION_STARTFRAME] + frameStride*curframe;
             // XXX: t->picnum can be out-of-bounds by bad user code.
 
             Bassert((unsigned)t->picnum < MAXTILES);
 
-            if (viewtype > 0)
+            if (frameStride > 0)
                 while (tilesiz[t->picnum].x == 0 && t->picnum > 0)
                     t->picnum -= l;       //Hack, for actors
 
@@ -5200,7 +5202,7 @@ FAKE_F3:
             ud.scrollmode = 1;
             ud.folx = g_player[screenpeek].ps->opos.x;
             ud.foly = g_player[screenpeek].ps->opos.y;
-            ud.fola = g_player[screenpeek].ps->oang;
+            ud.fola = fix16_to_int(g_player[screenpeek].ps->oq16ang);
         }
 #endif
         g_restorePalette = 1;
@@ -6505,6 +6507,14 @@ void drawframe_do(void)
     g_lastFrameDuration = g_lastFrameEndTime - g_lastFrameStartTime;
     g_frameCounter++;
 
+#ifdef __ANDROID__
+    // Report submission work, excluding intentional pacing / EGL present wait.
+    if (videoGetRenderMode() == REND_POLYMER) {
+        uint64_t const rate = timerGetNanoTickRate();
+        uint64_t const target = g_frameDelay ? g_frameDelay*1000000000ULL/rate : 16666667ULL;
+        AndroidReportRenderWork(g_lastFrameDuration*1000000000ULL/rate, target);
+    } else AndroidClosePerformanceSession();
+#endif
     videoNextPage();
     S_Update();
     g_lastFrameEndTime2 = timerGetNanoTicks();
@@ -6971,6 +6981,10 @@ int app_main(int argc, char const* const* argv)
         Menu_Init();
     }
 
+#if defined(__ANDROID__) && defined(POLYMER)
+    extern void G_PrecacheMenuFonts(void);
+    G_PrecacheMenuFonts();
+#endif
     ReadSaveGameHeaders();
 
 #if 0
@@ -7104,8 +7118,35 @@ MAIN_LOOP_RESTART:
         //    g_restartFrameRoutine = 0;
         //}
 
+#ifdef __ANDROID__
+        int androidTicksThisFrame = 0;
+        bool const androidBoundCatchup = !g_netClient && !g_netServer
+            && ud.multimode < 2 && ud.recstat == 0;
+#endif
         double gameUpdateStartTime = timerGetFractionalTicks();
         auto framecnt = g_frameCounter;
+
+#ifdef __ANDROID__
+        // A shader compile or a suspended surface must not replay seconds of
+        // held movement in one burst. Keep the fixed simulation step and normal
+        // speed, but discard excessive offline wall-clock debt after a stall.
+        if (!g_netClient && !g_netServer && ud.multimode < 2 && ud.recstat == 0
+            && (myplayer.gm & MODE_GAME) && !(myplayer.gm & (MODE_MENU | MODE_DEMO)))
+        {
+            constexpr int32_t maxCatchup = 3 * TICSPERFRAME;
+            if ((int32_t)(totalclock - ototalclock) > maxCatchup)
+            {
+                ototalclock = totalclock - TICSPERFRAME;
+                // This input was sampled before the blocked render. Do not
+                // replay it after the finger may already have been released.
+                localInput.fvel = localInput.svel = 0;
+                localInput.q16avel = localInput.q16horz = 0;
+                auto &pendingInput = inputfifo[0][myconnectindex];
+                pendingInput.fvel = pendingInput.svel = 0;
+                pendingInput.q16avel = pendingInput.q16horz = 0;
+            }
+        }
+#endif
 
         if (((g_netClient || g_netServer) || (myplayer.gm & (MODE_MENU|MODE_DEMO)) == 0) && (int32_t)(totalclock - ototalclock) >= TICSPERFRAME)
         {
@@ -7127,6 +7168,25 @@ MAIN_LOOP_RESTART:
                         g_frameJustDrawn = false;
                         Net_GetPackets();
                         G_DoMoveThings();
+#ifdef __ANDROID__
+                        // Bound the actual loop as well as its initial debt.
+                        if (androidBoundCatchup && ++androidTicksThisFrame >= 3)
+                        {
+                            if ((int32_t)(totalclock - ototalclock) >= TICSPERFRAME)
+                            {
+                                int const discardedTicks = (int32_t)(totalclock - ototalclock);
+                                ototalclock = totalclock;
+                                static uint64_t lastStallLog;
+                                uint64_t const now = timerGetNanoTicks();
+                                if (now - lastStallLog > timerGetNanoTickRate())
+                                {
+                                    LOG_F(WARNING, "Android: discarded %d overdue clock ticks after 3 simulation steps", discardedTicks);
+                                    lastStallLog = now;
+                                }
+                            }
+                            break;
+                        }
+#endif
                     }
 
                 }
@@ -7284,7 +7344,12 @@ int G_DoMoveThings(void)
         randomseed = ticrandomseed;
 
     for (bssize_t TRAVERSE_CONNECT(i))
+    {
         Bmemcpy(&g_player[i].input, &inputfifo[(g_netServer && myconnectindex == i)][i], sizeof(input_t));
+#ifdef __ANDROID__
+        P_ApplyAndroidTouchMovement(i);
+#endif
+    }
 
     G_UpdateInterpolations();
 

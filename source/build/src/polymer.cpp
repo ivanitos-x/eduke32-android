@@ -10,6 +10,34 @@
 #include "engine_priv.h"
 #include "xxhash_config.h"
 #include "texcache.h"
+#ifdef __ANDROID__
+#include "polymer_android_visibility.h"
+#include <algorithm>
+#endif
+
+// GLES2 has no rectangle samplers. Keep Polymer's indexed palette and mirror
+// passes, using normalized coordinates on ordinary 2D textures on Android.
+#ifdef __ANDROID__
+# define PR_RECT_TARGET GL_TEXTURE_2D
+# define PR_INDEX_FORMAT GL_LUMINANCE
+# define PR_RECT_EXTENSION ""
+# define PR_LOOKUP_DECL "uniform sampler2D lookupMap;\nuniform vec2 lookupScale;\n"
+# define PR_LOOKUP_SAMPLE "  float colorIndexNear = texture2D(lookupMap, vec2(colorIndex, floor(shadeLookup) + 0.5) * lookupScale).r;\n" \
+                         "  float colorIndexFar = texture2D(lookupMap, vec2(colorIndex, floor(shadeLookup + 1.0) + 0.5) * lookupScale).r;\n" \
+                         "  float colorIndexFullbright = texture2D(lookupMap, vec2(colorIndex, 0.5) * lookupScale).r;\n"
+# define PR_MIRROR_DECL "uniform sampler2D mirrorMap;\nuniform vec2 mirrorScale;\n"
+# define PR_MIRROR_SAMPLE "  vec4 mirrorTexel = texture2D(mirrorMap, mirrorCoords * mirrorScale);\n"
+#else
+# define PR_RECT_TARGET GL_TEXTURE_RECTANGLE_ARB
+# define PR_INDEX_FORMAT GL_RED
+# define PR_RECT_EXTENSION "#extension GL_ARB_texture_rectangle : enable\n"
+# define PR_LOOKUP_DECL "uniform sampler2DRect lookupMap;\n"
+# define PR_LOOKUP_SAMPLE "  float colorIndexNear = texture2DRect(lookupMap, vec2(colorIndex, floor(shadeLookup))).r;\n" \
+                         "  float colorIndexFar = texture2DRect(lookupMap, vec2(colorIndex, floor(shadeLookup + 1.0))).r;\n" \
+                         "  float colorIndexFullbright = texture2DRect(lookupMap, vec2(colorIndex, 0.0)).r;\n"
+# define PR_MIRROR_DECL "uniform sampler2DRect mirrorMap;\n"
+# define PR_MIRROR_SAMPLE "  vec4 mirrorTexel = texture2DRect(mirrorMap, mirrorCoords);\n"
+#endif
 
 #define LIBTESS2_IMPLEMENTATION
 
@@ -74,6 +102,37 @@ GLuint prartmaps[MAXTILES];
 GLuint prbasepalmaps[MAXBASEPALS];
 // numshades full indirections (32*256) per lookup
 GLuint prlookups[MAXPALOOKUPS];
+#ifdef __ANDROID__
+int32_t pr_packedpalette=0; // A/B did not establish a gain on this phone.
+static GLuint androidPackedPalettes[MAXBASEPALS][MAXPALOOKUPS];
+static size_t androidPackedPaletteBytes;
+static GLuint polymer_androidpackedpalette(int base,int pal)
+{
+    if ((unsigned)base>=MAXBASEPALS || (unsigned)pal>=MAXPALOOKUPS
+        || !basepaltable[base] || !palookup[pal] || numshades<1 || numshades>256) return 0;
+    GLuint &texture=androidPackedPalettes[base][pal];
+    if(texture) return texture;
+    size_t const bytes=size_t(numshades)*256*4;
+    if(androidPackedPaletteBytes+bytes>16*1024*1024) return 0;
+    auto pixels=(uint8_t*)Xmalloc(bytes);
+    auto const palette=(uint8_t const*)basepaltable[base];
+    for(int shade=0;shade<numshades;++shade) for(int index=0;index<256;++index) {
+        int const mapped=palookup[pal][shade*256+index];
+        size_t const dst=(size_t(shade)*256+index)*4;
+        pixels[dst]=palette[mapped*3];pixels[dst+1]=palette[mapped*3+1];
+        pixels[dst+2]=palette[mapped*3+2];pixels[dst+3]=255;
+    }
+    glGenTextures(1,&texture);buildgl_bindTexture(GL_TEXTURE_2D,texture);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,256,numshades,0,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    buildgl_bindTexture(GL_TEXTURE_2D,0);Xfree(pixels);
+    androidPackedPaletteBytes+=bytes;
+    return texture;
+}
+#endif
 
 GLuint   prmapvbo;
 GLintptr prwalldataoffset;
@@ -91,6 +150,62 @@ _prbucket *prbuckethead;
 int32_t    prcanbucket;
 
 static bool prdidsky;
+
+#ifdef __ANDROID__
+// Keep a program bound between world surfaces. GL4ES otherwise switches back
+// to its fixed-function pipeline after every polygon, then immediately returns
+// to the same Polymer shader. Restore the caller's shader state on scope exit.
+static int androidMaterialBatchDepth;
+int32_t pr_fastlight=0;
+int32_t pr_lightstatecache=0;
+static uint32_t androidFixedLightValid;
+static GLfloat androidFixedLightValues[4][4];
+static void polymer_androidlight(GLenum parameter,GLfloat const *value,unsigned slot,int count)
+{
+    uint32_t const flag=1u<<slot;
+    size_t const bytes=count*sizeof(GLfloat);
+    if(!pr_lightstatecache || !(androidFixedLightValid&flag)
+        || Bmemcmp(androidFixedLightValues[slot],value,bytes)) {
+        glLightfv(GL_LIGHT0,parameter,value);
+        Bmemcpy(androidFixedLightValues[slot],value,bytes);androidFixedLightValid|=flag;
+    }
+}
+
+int32_t pr_textbatch = 1;
+int32_t polymer_textbatch_depth;
+void polymer_begintextbatch(void)
+{
+    ++polymer_textbatch_depth;
+    ++androidMaterialBatchDepth;
+}
+void polymer_endtextbatch(void)
+{
+    --polymer_textbatch_depth;
+    if (--androidMaterialBatchDepth == 0)
+    {
+        buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+        buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        buildgl_useShaderProgram(0);
+    }
+}
+struct AndroidPolymerMaterialBatch
+{
+    AndroidPolymerMaterialBatch() { androidFixedLightValid=0; ++androidMaterialBatchDepth; }
+    ~AndroidPolymerMaterialBatch()
+    {
+        if (--androidMaterialBatchDepth == 0)
+        {
+            buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+            buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+            buildgl_useShaderProgram(0);
+        }
+    }
+};
+#endif
+
+#ifdef __ANDROID__
+#include "polymer_android_lightscissor.h"
+#endif
 
 static inthashtable_t prprogramtable = { nullptr, INTHASH_SIZE(256) };
 static GrowArray<_prprograminfo *> prprogramptrs;
@@ -218,6 +333,35 @@ int32_t         lightcount;
 int32_t         curlight;
 #pragma pack(pop)
 
+#ifdef __ANDROID__
+// Build priority order once per view, then share it between all sprite/model
+// light tests. The original loops repeatedly walk sparse light slots for each
+// priority and each object. Keep the original priority/index ordering.
+static int16_t androidOrderedLights[PR_MAXLIGHTS];
+static int androidOrderedLightCount;
+static int androidOrderedLightPriority = -1;
+static bool androidLightOrderDirty = true;
+static void polymer_androidlightorder(void)
+{
+    if (!androidLightOrderDirty && androidOrderedLightPriority == pr_maxlightpriority) return;
+    androidOrderedLightCount = 0;
+    for (int id = 0, active = 0; id < PR_MAXLIGHTS && active < lightcount; ++id)
+        if (prlights[id].flags.active)
+        {
+            ++active;
+            if (prlights[id].priority < pr_maxlightpriority)
+                androidOrderedLights[androidOrderedLightCount++] = id;
+        }
+    std::sort(androidOrderedLights, androidOrderedLights + androidOrderedLightCount,
+        [](int16_t a, int16_t b) {
+            return prlights[a].priority != prlights[b].priority
+                ? prlights[a].priority < prlights[b].priority : a < b;
+        });
+    androidOrderedLightPriority = pr_maxlightpriority;
+    androidLightOrderDirty = false;
+}
+#endif
+
 static const GLfloat  shadowBias[] =
 {
     0.5, 0.0, 0.0, 0.0,
@@ -232,13 +376,13 @@ static const _prprogrambit   prprogrambits[PR_BIT_COUNT] = {
         //1 << PR_BIT_HEADER,
         // vert_def
         "#version 120\n"
-        "#extension GL_ARB_texture_rectangle : enable\n"
+        PR_RECT_EXTENSION
         "\n",
         // vert_prog
         "",
         // frag_def
         "#version 120\n"
-        "#extension GL_ARB_texture_rectangle : enable\n"
+        PR_RECT_EXTENSION
         "\n",
         // frag_prog
         "",
@@ -330,7 +474,7 @@ static const _prprogrambit   prprogrambits[PR_BIT_COUNT] = {
         // frag_def
         "uniform sampler2D artMap;\n"
         "uniform sampler2D basePalMap;\n"
-        "uniform sampler2DRect lookupMap;\n"
+        PR_LOOKUP_DECL
         "uniform float shadeOffset;\n"
         "uniform float visibility;\n"
         "varying vec3 horizDistance;\n"
@@ -339,12 +483,24 @@ static const _prprogrambit   prprogrambits[PR_BIT_COUNT] = {
 
         "  float shadeLookup = length(horizDistance) * (1.0 / 1.024) * visibility + shadeOffset;\n"
         "  float colorIndex = texture2D(artMap, commonTexCoord.st).r * 256.0;\n"
-        "  float colorIndexNear = texture2DRect(lookupMap, vec2(colorIndex, floor(shadeLookup))).r;\n"
-        "  float colorIndexFar = texture2DRect(lookupMap, vec2(colorIndex, floor(shadeLookup + 1.0))).r;\n"
-        "  float colorIndexFullbright = texture2DRect(lookupMap, vec2(colorIndex, 0.0)).r;\n"
+#ifdef __ANDROID__
+        "  vec3 texelNear; vec3 texelFar;\n"
+        "#ifdef PR_PACKED_PALETTE\n"
+        "    texelNear = texture2D(lookupMap, vec2(colorIndex, floor(shadeLookup) + 0.5) * lookupScale).rgb;\n"
+        "    texelFar = texture2D(lookupMap, vec2(colorIndex, floor(shadeLookup + 1.0) + 0.5) * lookupScale).rgb;\n"
+        "    diffuseTexel.rgb = texture2D(lookupMap, vec2(colorIndex, 0.5) * lookupScale).rgb;\n"
+        "#else\n"
+        PR_LOOKUP_SAMPLE
+        "    texelNear = texture2D(basePalMap, vec2(colorIndexNear, 0.5)).rgb;\n"
+        "    texelFar = texture2D(basePalMap, vec2(colorIndexFar, 0.5)).rgb;\n"
+        "    diffuseTexel.rgb = texture2D(basePalMap, vec2(colorIndexFullbright, 0.5)).rgb;\n"
+        "#endif\n"
+#else
+        PR_LOOKUP_SAMPLE
         "  vec3 texelNear = texture2D(basePalMap, vec2(colorIndexNear, 0.5)).rgb;\n"
         "  vec3 texelFar = texture2D(basePalMap, vec2(colorIndexFar, 0.5)).rgb;\n"
         "  diffuseTexel.rgb = texture2D(basePalMap, vec2(colorIndexFullbright, 0.5)).rgb;\n"
+#endif
         "\n"
         "#ifndef PR_LIGHTING_PASS\n"
         "  result.rgb = mix(texelNear, texelFar, fract(shadeLookup));\n"
@@ -463,6 +619,7 @@ static const _prprogrambit   prprogrambits[PR_BIT_COUNT] = {
         "",
         // frag_def
         "uniform vec2 specMaterial;\n"
+        "#define PR_CUSTOM_SPECULAR\n"
         "\n",
         // frag_prog
         "  specularMaterial = specMaterial;\n"
@@ -475,14 +632,14 @@ static const _prprogrambit   prprogrambits[PR_BIT_COUNT] = {
         // vert_prog
         "",
         // frag_def
-        "uniform sampler2DRect mirrorMap;\n"
+        PR_MIRROR_DECL
         "\n",
         // frag_prog
         "  vec2 mirrorCoords = gl_FragCoord.st;\n"
         "#ifdef PR_USE_NORMAL_MAP\n"
         "  mirrorCoords += 100.0 * (normalTexel.rg - 0.5);\n"
         "#endif\n"
-        "  vec4 mirrorTexel = texture2DRect(mirrorMap, mirrorCoords);\n"
+        PR_MIRROR_SAMPLE
         "  result = vec4((result.rgb * -(specTexel.a - 1.0)) + (mirrorTexel.rgb * specTexel.rgb * specTexel.a), result.a);\n"
         "\n",
     },
@@ -619,13 +776,20 @@ static const _prprogrambit   prprogrambits[PR_BIT_COUNT] = {
         "  float spotCosAngle = dot(-L, normalize(spotVector));\n"
         "  spotAttenuation = clamp((spotCosAngle - spotCosRadius.x) * spotCosRadius.y, 0.0, 1.0);\n"
         "#endif\n"
+#ifdef __ANDROID__
+        "  if (lightAttenuation * spotAttenuation > 0.0) {\n"
+#endif
         "#ifdef PR_USE_NORMAL_MAP\n"
         "  vec3 E = eyeVec;\n"
         "  vec3 N = normalize(2.0 * (normalTexel.rgb - 0.5));\n"
         "  L = normalize(tangentSpaceLightVector);\n"
         "#else\n"
         "  vec3 E = normalize(eyeVector);\n"
+        "#ifdef PR_FAST_LIGHT_MATH\n"
+        "  vec3 N = vertexNormal;\n"
+        "#else\n"
         "  vec3 N = normalize(vertexNormal);\n"
+        "#endif\n"
         "#endif\n"
         "\n"
         "  float NdotL = max(dot(N, L), 0.0);\n"
@@ -638,9 +802,28 @@ static const _prprogrambit   prprogrambits[PR_BIT_COUNT] = {
         "  specTexel.rgb = diffuseTexel.rgb * diffuseTexel.a;\n"
         "#endif\n"
         "\n"
+        "#if defined(PR_FAST_LIGHT_MATH) && !defined(PR_USE_SPECULAR_MAP) && !defined(PR_CUSTOM_SPECULAR)\n"
+        "  float specBase = max(dot(R, E), 0.0);\n"
+        "  float spec2 = specBase * specBase;\n"
+        "  float spec4 = spec2 * spec2;\n"
+        "  float spec8 = spec4 * spec4;\n"
+        "  float lightSpecular = ((spec8 * spec4) * spec2) * specBase;\n"
+        "#else\n"
         "  float lightSpecular = pow( max(dot(R, E), 0.0), specularMaterial.x * specTexel.a) * specularMaterial.y;\n"
+        "#endif\n"
         "  result += vec4(lightDiffuse * specTexel.rgb * lightSpecular, 0.0);\n"
+#ifdef __ANDROID__
+        "  }\n"
+#endif
         "\n",
+    },
+    {
+        //1 << PR_BIT_FAST_LIGHT_MATH,
+        "", "", "#define PR_FAST_LIGHT_MATH\n", "",
+    },
+    {
+        //1 << PR_BIT_PACKED_PALETTE,
+        "", "", "#define PR_PACKED_PALETTE\n", "",
     },
     {
         //1 << PR_BIT_FOOTER,
@@ -718,6 +901,12 @@ fix16_t         viewangle;
 
 int32_t         depth;
 _prmirror       mirrors[10];
+#ifdef __ANDROID__
+// One workspace per active mirror pass; its mask list survives until the
+// matching drawmasks call. Avoid heap allocations for every rendered frame.
+static int16_t androidSectorMasks[ARRAY_SIZE(mirrors) + 1][MAXSECTORS];
+static int16_t androidSectorMaskCounts[ARRAY_SIZE(mirrors) + 1];
+#endif
 
 TESStesselator*  prtess;
 
@@ -739,6 +928,21 @@ int32_t             polymer_init(void)
 
     if (pr_verbosity >= 1) VLOG_F(LOG_PR, "Initializing Polymer subsystem...");
 
+#ifdef __ANDROID__
+    LOG_F(INFO, "Polymer capabilities: NPOT=%d depth-texture=%d shadows=%d FBO=%d rectangle-texture=%d multitexture=%d occlusion-query=%d GLSL=%d.",
+          glinfo.texnpot, glinfo.depthtex, glinfo.shadow, glinfo.fbos, glinfo.rect,
+          glinfo.multitex, glinfo.occlusionqueries, glinfo.glsl);
+#endif
+
+#ifdef __ANDROID__
+    // Occlusion queries only reduce overdraw. Shadow comparison and 3D LUTs
+    // are optional effects, rather than prerequisites for Polymer lighting.
+    pr_shadows = 0;
+    pr_highpalookups = 0;
+    pr_buckets = 0; // persistent buffer storage is unavailable in GLES2
+    LOG_F(INFO, "Polymer Android: normalized 2D palette/mirror textures, CPU portal visibility, shadows and 3D LUTs disabled.");
+    if (!glinfo.texnpot || !glinfo.depthtex || !glinfo.fbos || !glinfo.multitex || !glinfo.glsl)
+#else
     if (!glinfo.texnpot ||
         !glinfo.depthtex ||
         !glinfo.shadow ||
@@ -747,9 +951,13 @@ int32_t             polymer_init(void)
         !glinfo.multitex ||
         !glinfo.occlusionqueries ||
         !glinfo.glsl)
+#endif
     {
         VLOG_F(LOG_PR, "Your video card driver/combo doesn't support the necessary features!");
         VLOG_F(LOG_PR, "Disabling Polymer...");
+#ifdef __ANDROID__
+        LOG_F(ERROR, "Polymer initialization rejected: one or more required GL features are unavailable (see capabilities above).");
+#endif
         return 0;
     }
 
@@ -792,11 +1000,11 @@ int32_t             polymer_init(void)
 
     inthash_init(&prprogramtable);
 
-    polymer_initrendertargets(pr_shadowcount + 1);
+    polymer_initrendertargets((pr_shadows ? pr_shadowcount : 0) + 1);
 
     // Prime highpalookup maps
     i = 0;
-    while (i < MAXBASEPALS)
+    while (pr_highpalookups && i < MAXBASEPALS)
     {
         if (prhighpalookups[i] == nullptr)
         {
@@ -838,6 +1046,26 @@ int32_t             polymer_init(void)
 
     buildgl_resetSamplerObjects();
     polymost_initdrawpoly();
+
+#ifdef __ANDROID__
+    // Compile common world/light variants on the loading screen, before the
+    // player can hold movement while a new shader blocks the render thread.
+    constexpr int baseProgram = (1 << PR_BIT_HEADER) | (1 << PR_BIT_FOOTER)
+        | (1 << PR_BIT_DIFFUSE_MAP) | (1 << PR_BIT_DIFFUSE_MAP2)
+        | (1 << PR_BIT_DIFFUSE_MODULATION);
+    polymer_compileprogram(baseProgram); // menu RGBA glyphs
+    polymer_compileprogram(baseProgram | (1 << PR_BIT_GLOW_MAP));
+    polymer_compileprogram(baseProgram | (1 << PR_BIT_FOG) | (1 << PR_BIT_GLOW_MAP));
+    polymer_compileprogram(baseProgram | (1 << PR_BIT_FOG));
+    polymer_compileprogram(baseProgram | (1 << PR_BIT_POINT_LIGHT));
+    polymer_compileprogram(baseProgram | (1 << PR_BIT_POINT_LIGHT) | (1 << PR_BIT_ANIM_INTERPOLATION));
+    constexpr int artProgram = (1 << PR_BIT_HEADER) | (1 << PR_BIT_FOOTER)
+        | (1 << PR_BIT_ART_MAP) | (1 << PR_BIT_DIFFUSE_MODULATION);
+    polymer_compileprogram(artProgram);
+    polymer_compileprogram(artProgram | (1 << PR_BIT_POINT_LIGHT));
+    polymer_compileprogram(artProgram | (1 << PR_BIT_POINT_LIGHT) | (1 << PR_BIT_LIGHTING_PASS));
+    polymer_compileprogram(artProgram | (1 << PR_BIT_MIRROR_MAP));
+#endif
 
     if (pr_verbosity >= 1) VLOG_F(LOG_PR, "Initialization complete in %d ms.", timerGetTicks()-t);
 
@@ -1018,6 +1246,9 @@ void                polymer_resetlights(void)
     }
 
     lightcount = 0;
+#ifdef __ANDROID__
+    androidLightOrderDirty = true;
+#endif
 
     if (!engineLoadMHK(NULL))
         VLOG_F(LOG_PR, "Refreshed maphack data");
@@ -1120,6 +1351,9 @@ void polymer_drawrooms(int32_t daposx, int32_t daposy, int32_t daposz, fix16_t d
     pos[2] = -(float)daposx;
 
     polymer_updatelights();
+#ifdef __ANDROID__
+    androidLightOrderDirty = true;
+#endif
 
 //     polymer_resetlights();
 //     if (pr_lighting)
@@ -1271,6 +1505,9 @@ void polymer_drawrooms(int32_t daposx, int32_t daposy, int32_t daposz, fix16_t d
 
 void                polymer_drawmasks(void)
 {
+#ifdef __ANDROID__
+    AndroidPolymerMaterialBatch materialBatch;
+#endif
     buildgl_setEnabled(GL_ALPHA_TEST);
     buildgl_setEnabled(GL_BLEND);
 //     buildgl_setEnabled(GL_POLYGON_OFFSET_FILL);
@@ -1295,8 +1532,13 @@ void                polymer_drawmasks(void)
         // Both the top-level game drawrooms and the recursive internal passes
         // should be accounted for here. If these free cause corruption, there's
         // an accounting bug somewhere.
+#ifdef __ANDROID__
+        cursectormaskcount = nullptr;
+        cursectormasks = nullptr;
+#else
         DO_FREE_AND_NULL(cursectormaskcount);
         DO_FREE_AND_NULL(cursectormasks);
+#endif
     }
 
     buildgl_setDisabled(GL_CULL_FACE);
@@ -1444,6 +1686,9 @@ void                polymer_inb4rotatesprite(int16_t tilenum, char pal, int8_t s
     polymer_getbuildmaterial(&rotatespritematerial, tilenum, pal, shade, 0, method);
     rotatespritematerialbits = polymer_bindmaterial(&rotatespritematerial, NULL, 0);
     buildgl_bindSamplerObject(0, PTH_CLAMPED | ((rotatespritematerialbits & (1 << PR_BIT_ART_MAP)) ? PTH_INDEXED : PTH_HIGHTILE));
+#ifdef __ANDROID__
+    if(polymost_prepareHudClientArrays()) return;
+#endif
     buildgl_bindBuffer(GL_ARRAY_BUFFER, drawpolyVertsID);
 
     glVertexPointer(3, GL_FLOAT, 5*sizeof(float), 0);
@@ -1453,7 +1698,10 @@ void                polymer_inb4rotatesprite(int16_t tilenum, char pal, int8_t s
 void                polymer_postrotatesprite(void)
 {
     polymer_unbindmaterial(rotatespritematerialbits);
-    buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+#ifdef __ANDROID__
+    if (!polymer_textbatch_depth)
+#endif
+        buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 static void         polymer_setupdiffusemodulation(_prplane *plane, GLubyte modulation, const GLubyte *data)
@@ -1590,6 +1838,21 @@ void                polymer_drawsprite(int32_t snum)
         break;
     }
 
+#ifdef __ANDROID__
+    if ((cs & CSTAT_SPRITE_ALIGNMENT) == CSTAT_SPRITE_ALIGNMENT_FACING)
+    {
+        polymer_androidlightorder();
+        s->plane.lightcount = 0;
+        if (!depth || mirrors[depth-1].plane)
+            for (int n = 0; n < androidOrderedLightCount && s->plane.lightcount < PR_MAXPLANELIGHTS; ++n)
+            {
+                int const id = androidOrderedLights[n];
+                if (sepdist(prlights[id].x-tspr->x, prlights[id].y-tspr->y, prlights[id].z-tspr->z) < prlights[id].range + 256
+                    && polymer_planeinlight(s->plane, prlights[id]))
+                    s->plane.lights[s->plane.lightcount++] = id;
+            }
+    }
+#else
     if ((cs & CSTAT_SPRITE_ALIGNMENT) == CSTAT_SPRITE_ALIGNMENT_FACING)
     {
         int32_t curpriority = 0;
@@ -1617,6 +1880,8 @@ void                polymer_drawsprite(int32_t snum)
             curpriority++;
         }
     }
+
+#endif
 
     if (automapping == 1)
         bitmap_set(show2dsprite, spritenum);
@@ -1712,6 +1977,9 @@ int16_t             polymer_addlight(_prlight* light)
         prlights[lighti].flags.invalidate = 1;
 
     lightcount++;
+#ifdef __ANDROID__
+    androidLightOrderDirty = true;
+#endif
 
     return lighti;
 }
@@ -1734,6 +2002,9 @@ void                polymer_deletelight(int16_t lighti)
     prlights[lighti].flags.active = 0;
 
     lightcount--;
+#ifdef __ANDROID__
+    androidLightOrderDirty = true;
+#endif
 }
 
 void                polymer_invalidatelights(void)
@@ -1792,6 +2063,9 @@ bool polymer_havehighpalookup(uint8_t basepalnum, uint8_t palnum)
 // CORE
 static void         polymer_displayrooms(const int16_t dacursectnum)
 {
+#ifdef __ANDROID__
+    AndroidPolymerMaterialBatch materialBatch;
+#endif
     usectorptr_t      sec;
     int32_t         i;
 #ifdef YAX_ENABLE
@@ -1822,6 +2096,15 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
     glGetFloatv(GL_PROJECTION_MATRIX, localprojectionmatrix);
 
     polymer_extractfrustum(localmodelviewmatrix, localprojectionmatrix, frustum);
+#ifdef __ANDROID__
+    AndroidLightScissorView lightScissors(depth == 0, localmodelviewmatrix, localprojectionmatrix);
+#endif
+#ifdef __ANDROID__
+    AndroidVisibilityFrame cpuVisibility(depth == 0);
+    auto wallFacesView = [&](int id) { return cpuVisibility.visible(id); };
+#else
+    auto wallFacesView = [](int id) { return wallvisible(globalposx, globalposy, id); };
+#endif
 
     Bmemset(queryid, 0, sizeof(GLuint) * numwalls);
     Bmemset(drawingstate, 0, sizeof(drawingstate));
@@ -1835,8 +2118,14 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
 
     mirrorcount = 0;
 
+#ifdef __ANDROID__
+    localsectormasks = androidSectorMasks[depth];
+    localsectormaskcount = &androidSectorMaskCounts[depth];
+    *localsectormaskcount = 0;
+#else
     localsectormasks = (int16_t *)Xmalloc(sizeof(int16_t) * numsectors);
     localsectormaskcount = (int16_t *)Xcalloc(1, sizeof(int16_t));
+#endif
     cursectormasks = localsectormasks;
     cursectormaskcount = localsectormaskcount;
 
@@ -1844,6 +2133,12 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     polymer_drawsky(cursky, curskypal, curskyshade);
     buildgl_setEnabled(GL_DEPTH_TEST);
+
+#ifdef __ANDROID__
+    // Sky GL submission overlaps the worker's immutable CPU batch. Join before
+    // consuming any result or entering recursive mirror views.
+    cpuVisibility.finish();
+#endif
 
     // depth-only occlusion testing pass
 //     overridematerial = 0;
@@ -1866,7 +2161,7 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
         {
             // if we have a level boundary somewhere in the sector,
             // consider these walls as visportals
-            if (wall[sec->wallptr + i].nextsector < 0 && pr_buckets == 0)
+            if (glinfo.occlusionqueries && wall[sec->wallptr + i].nextsector < 0 && pr_buckets == 0)
                 doquery = 1;
         }
         while (--i >= 0);
@@ -1875,7 +2170,7 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
         while (i >= 0)
         {
             if ((wall[sec->wallptr + i].nextsector >= 0) &&
-                (wallvisible(globalposx, globalposy, sec->wallptr + i)) &&
+                (wallFacesView(sec->wallptr + i)) &&
                 (polymer_planeinfrustum(prwalls[sec->wallptr + i]->mask, frustum)))
             {
                 if ((prwalls[sec->wallptr + i]->mask.vertcount == 4) &&
@@ -1974,7 +2269,7 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
         i = sec->wallnum-1;
         do
         {
-            if (wallvisible(globalposx, globalposy, sec->wallptr + i))
+            if (wallFacesView(sec->wallptr + i))
                 polymer_drawwall(sectorqueue[front], sec->wallptr + i);
         }
         while (--i >= 0);
@@ -2399,12 +2694,18 @@ static void         polymer_drawplane(_prplane* plane)
         if (plane->indices)
             buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, plane->ivbo);
     } else {
+        // A preceding batched plane may have retained its VBO bindings.
+        buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+        buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         glVertexPointer(3, GL_FLOAT, sizeof(_prvert), &plane->buffer->x);
         glTexCoordPointer(2, GL_FLOAT, sizeof(_prvert), &plane->buffer->u);
     }
 
     curlight = 0;
     do {
+#ifdef __ANDROID__
+        AndroidLightScissorPass lightScissor(curlight > 0 && curlight < plane->lightcount ? plane->lights[curlight] : -1);
+#endif
         materialbits = polymer_bindmaterial(&plane->material, plane->lights, plane->lightcount);
         auto &prprogram = *polymer_getprogram(materialbits);
 
@@ -2422,7 +2723,11 @@ static void         polymer_drawplane(_prplane* plane)
             else
                 glDrawElements(GL_TRIANGLES, plane->indicescount, GL_UNSIGNED_SHORT, plane->indices);
         } else
+#ifdef __ANDROID__
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+#else
             glDrawArrays(GL_QUADS, 0, 4);
+#endif
 
         polymer_unbindmaterial(materialbits);
 
@@ -2432,7 +2737,11 @@ static void         polymer_drawplane(_prplane* plane)
         curlight++;
     } while ((curlight < plane->lightcount) && (curlight < pr_maxlightpasses) && (!depth || mirrors[depth-1].plane));
 
-    if (planevbo)
+    if (planevbo
+#ifdef __ANDROID__
+        && androidMaterialBatchDepth == 0
+#endif
+       )
     {
         buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
         if (plane->indices)
@@ -2562,6 +2871,14 @@ static void         polymer_freeboard(void)
         i++;
     }
 
+#ifdef __ANDROID__
+    for(int base=0;base<MAXBASEPALS;++base) for(int pal=0;pal<MAXPALOOKUPS;++pal)
+        if(androidPackedPalettes[base][pal]) {
+            glDeleteTextures(1,&androidPackedPalettes[base][pal]);
+            androidPackedPalettes[base][pal]=0;
+        }
+    androidPackedPaletteBytes=0;
+#endif
     i = 0;
     while (i < MAXPALOOKUPS)
     {
@@ -3839,12 +4156,23 @@ static void         polymer_extractfrustum(GLfloat* modelview, GLfloat* projecti
     GLfloat         matrix[16];
     int32_t         i;
 
+#ifdef __ANDROID__
+    // The matrices are already on the CPU. Avoid making GL4ES dirty its texture
+    // matrix state and query it back just to extract the view frustum.
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 4; ++row)
+            matrix[col * 4 + row] = projection[row] * modelview[col * 4]
+                + projection[4 + row] * modelview[col * 4 + 1]
+                + projection[8 + row] * modelview[col * 4 + 2]
+                + projection[12 + row] * modelview[col * 4 + 3];
+#else
     glMatrixMode(GL_TEXTURE);
     glLoadMatrixf(projection);
     glMultMatrixf(modelview);
     glGetFloatv(GL_TEXTURE_MATRIX, matrix);
     glLoadIdentity();
     glMatrixMode(GL_MODELVIEW);
+#endif
 
     i = 0;
     do
@@ -4024,9 +4352,30 @@ void                polymer_updatesprite(int32_t snum)
     spos[1] = -(float)(tspr->z) * (1.f/16.f);
     spos[2] = -(float)tspr->x;
 
+#ifdef __ANDROID__
+    // Build T(position)*Ry(-yaw)*Rx(-pitch)*T(offset)*S directly. The
+    // compatibility GL stack is unnecessary for a CPU-only sprite transform.
+    auto spriteTransform = [&](float yaw, float pitch, float tx, float ty, float tz,
+                               float sx, float sy, float sz) {
+        float const a = yaw * (float(M_PI) / 180.f);
+        float const h = pitch * (float(M_PI) / 180.f);
+        float const ca = cosf(a), sa = sinf(a), ch = cosf(h), sh = sinf(h);
+        float const r[9] = { ca, 0.f, sa, sa*sh, ch, -ca*sh, -sa*ch, sh, ca*ch };
+        for (int row = 0; row < 3; ++row)
+        {
+            spritemodelview[row] = r[row] * sx;
+            spritemodelview[4+row] = r[3+row] * sy;
+            spritemodelview[8+row] = r[6+row] * sz;
+            spritemodelview[12+row] = spos[row] + r[row]*tx + r[3+row]*ty + r[6+row]*tz;
+        }
+        spritemodelview[3] = spritemodelview[7] = spritemodelview[11] = 0.f;
+        spritemodelview[15] = 1.f;
+    };
+#else
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
+#endif
 
     inbuffer = vertsprite;
 
@@ -4057,11 +4406,15 @@ void                polymer_updatesprite(int32_t snum)
     case CSTAT_SPRITE_ALIGNMENT_FACING:
         ang = (float)((fix16_to_int(viewangle)) & 2047) * (360.f/2048.f);
 
+#ifdef __ANDROID__
+        spriteTransform(ang, horizang, -xoff, yoff, 0.f, xsize, ysize, 1.f);
+#else
         glTranslatef(spos[0], spos[1], spos[2]);
         glRotatef(-ang, 0.0f, 1.0f, 0.0f);
         glRotatef(-horizang, 1.0f, 0.0f, 0.0f);
         glTranslatef((float)(-xoff), (float)(yoff), 0.0f);
         glScalef((float)(xsize), (float)(ysize), 1.0f);
+#endif
         break;
     case CSTAT_SPRITE_ALIGNMENT_WALL:
         {
@@ -4088,10 +4441,14 @@ void                polymer_updatesprite(int32_t snum)
                 }
             }
 
+#ifdef __ANDROID__
+            spriteTransform(ang, 0.f, -xoff, yoff-centeryoff, 0.f, xsize, ysize, 1.f);
+#else
             glTranslatef(spos[0], spos[1], spos[2]);
             glRotatef(-ang, 0.0f, 1.0f, 0.0f);
             glTranslatef((float)(-xoff), (float)(yoff - centeryoff), 0.0f);
             glScalef((float)(xsize), (float)(ysize), 1.0f);
+#endif
             break;
         }
     case CSTAT_SPRITE_ALIGNMENT_FLOOR:
@@ -4100,19 +4457,25 @@ void                polymer_updatesprite(int32_t snum)
         float const sang = atan2f(float(heinum), 4096.f) * (180.f * float(M_1_PI));
         ang = (float)((tspr->ang + 1024) & 2047) * (360.f/2048.f);
 
+#ifdef __ANDROID__
+        spriteTransform(ang, sang, -xoff, 1.f, yoff, xsize, 1.f, ysize);
+#else
         glTranslatef(spos[0], spos[1], spos[2]);
         glRotatef(-ang, 0.0f, 1.0f, 0.0f);
         glRotatef(-sang, 1.0f, 0.0f, 0.0f);
         glTranslatef((float)(-xoff), 1.0f, (float)(yoff));
         glScalef((float)(xsize), 1.0f, (float)(ysize));
+#endif
 
         inbuffer = horizsprite;
         break;
     }
     }
 
+#ifndef __ANDROID__
     glGetFloatv(GL_MODELVIEW_MATRIX, spritemodelview);
     glPopMatrix();
+#endif
 
     Bmemcpy(s->plane.buffer, inbuffer, sizeof(_prvert) * 4);
 
@@ -4153,6 +4516,18 @@ void                polymer_updatesprite(int32_t snum)
         }
     }
 
+#ifdef __ANDROID__
+    if (alignmask != CSTAT_SPRITE_ALIGNMENT_FACING)
+    {
+        polymer_androidlightorder();
+        polymer_resetplanelights(&s->plane);
+        for (int n = 0; n < androidOrderedLightCount; ++n)
+        {
+            int const id = androidOrderedLights[n];
+            if (polymer_planeinlight(s->plane, prlights[id])) polymer_addplanelight(&s->plane, id);
+        }
+    }
+#else
     if (alignmask != CSTAT_SPRITE_ALIGNMENT_FACING)
     {
         int32_t curpriority = 0;
@@ -4182,6 +4557,7 @@ void                polymer_updatesprite(int32_t snum)
             curpriority++;
         }
     }
+#endif
 }
 
 // SKIES
@@ -4399,7 +4775,11 @@ static void         polymer_drawskybox(int16_t tilenum, char palnum, int8_t shad
         buildgl_bindTexture(GL_TEXTURE_2D, pth ? pth->glpic : 0);
         glVertexPointer(3, GL_FLOAT, 5 * sizeof(GLfloat), (GLfloat*)(4 * 5 * i * sizeof(GLfloat)));
         glTexCoordPointer(2, GL_FLOAT, 5 * sizeof(GLfloat), (GLfloat*)(((4 * 5 * i) + 3) * sizeof(GLfloat)));
-        glDrawArrays(GL_QUADS, 0, 4);
+#ifdef __ANDROID__
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+#else
+            glDrawArrays(GL_QUADS, 0, 4);
+#endif
         buildgl_setDisabled(GL_TEXTURE_2D);
 
         i++;
@@ -4662,6 +5042,31 @@ void polymer_drawmdsprite(tspriteptr_t tspr)
         polymer_transformpoint(spos, tspos, spritemodelview);
         polymer_transformpoint(tspos, spos, rootmodelviewmatrix);
 
+#ifdef __ANDROID__
+        polymer_androidlightorder();
+        for (int n = 0; n < androidOrderedLightCount && modellightcount < PR_MAXPLANELIGHTS; ++n)
+        {
+            i = androidOrderedLights[n];
+                lradius = prlights[i].range / 1000.0f;
+
+                lpos[0] = (float)prlights[i].y;
+                lpos[1] = -(float)prlights[i].z * (1.f/16.f);
+                lpos[2] = -(float)prlights[i].x;
+
+                polymer_transformpoint(lpos, tlpos, rootmodelviewmatrix);
+
+                vec[0] = tlpos[0] - spos[0];
+                vec[0] *= vec[0];
+                vec[1] = tlpos[1] - spos[1];
+                vec[1] *= vec[1];
+                vec[2] = tlpos[2] - spos[2];
+                vec[2] *= vec[2];
+
+                if ((vec[0] + vec[1] + vec[2]) <= ((sradius+lradius) * (sradius+lradius)))
+                    modellights[modellightcount++] = i;
+
+        }
+#else
         while (curpriority < pr_maxlightpriority)
         {
             i = j = 0;
@@ -4700,6 +5105,7 @@ void polymer_drawmdsprite(tspriteptr_t tspr)
             }
             curpriority++;
         }
+#endif
     }
 
     for (surfi=0;surfi<m->head.numsurfs;surfi++)
@@ -4877,6 +5283,9 @@ static void         polymer_getscratchmaterial(_prmaterial* material)
     material->artmap = 0;
     material->basepalmap = 0;
     material->lookupmap = 0;
+#ifdef __ANDROID__
+    material->packedlookupmap=0;
+#endif
     // PR_BIT_DIFFUSE_MAP
     material->diffusemap = 0;
     material->diffusescale[0] = material->diffusescale[1] = 1.0f;
@@ -4925,11 +5334,11 @@ static void         polymer_setupartmap(int16_t tilenum, char pal, int32_t meth)
         buildgl_bindTexture(GL_TEXTURE_2D, prartmaps[tilenum]);
         glTexImage2D(GL_TEXTURE_2D,
             0,
-            GL_RED,
+            PR_INDEX_FORMAT,
             tilesiz[tilenum].x,
             tilesiz[tilenum].y,
             0,
-            GL_RED,
+            PR_INDEX_FORMAT,
             GL_UNSIGNED_BYTE,
             tempbuffer);
 
@@ -4964,22 +5373,22 @@ static void         polymer_setupartmap(int16_t tilenum, char pal, int32_t meth)
 
     if (!prlookups[pal]) {
         glGenTextures(1, &prlookups[pal]);
-        buildgl_bindTexture(GL_TEXTURE_RECTANGLE_ARB, prlookups[pal]);
-        glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,
+        buildgl_bindTexture(PR_RECT_TARGET, prlookups[pal]);
+        glTexImage2D(PR_RECT_TARGET,
             0,
-            GL_RED,
+            PR_INDEX_FORMAT,
             256,
             numshades,
             0,
-            GL_RED,
+            PR_INDEX_FORMAT,
             GL_UNSIGNED_BYTE,
             palookup[pal]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-        glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        buildgl_bindTexture(GL_TEXTURE_RECTANGLE_ARB, 0);
+        glTexParameteri(PR_RECT_TARGET, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(PR_RECT_TARGET, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(PR_RECT_TARGET, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(PR_RECT_TARGET, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        buildgl_bindTexture(PR_RECT_TARGET, 0);
     }
 }
 
@@ -5026,6 +5435,9 @@ static _prbucket*   polymer_getbuildmaterial(_prmaterial* material, int16_t tile
         material->artmap = prartmaps[tilenum];
         material->basepalmap = prbasepalmaps[curbasepal];
         material->lookupmap = prlookups[pal];
+#ifdef __ANDROID__
+        material->packedlookupmap=polymer_androidpackedpalette(curbasepal,(uint8_t)pal);
+#endif
 
         if (!material->basepalmap || !material->lookupmap) {
             material->artmap = 0;
@@ -5127,6 +5539,29 @@ done:
     return bucketptr;
 }
 
+#ifdef __ANDROID__
+void polymer_precacheuitile(int32_t tile, int32_t pal)
+{
+    if ((unsigned)tile >= MAXTILES || (unsigned)pal >= MAXPALOOKUPS
+        || tilesiz[tile].x <= 0 || tilesiz[tile].y <= 0) return;
+    _prmaterial material;
+    polymer_getbuildmaterial(&material, tile, pal, 0, -16, DAMETH_CLAMPED | DAMETH_MASK);
+}
+#endif
+
+static inline void polymer_bindmaterialtexture(int texunit, GLenum target, GLuint texture, int32_t samplerFlags)
+{
+    buildgl_bindSamplerObject(texunit, samplerFlags);
+#ifdef __ANDROID__
+    // Palettes and lookup maps are shared by most surfaces. Do not switch
+    // texture units at all when the expected texture is already bound there.
+    if ((uint32_t)inthash_find(&gl.state[texunit], target) == texture)
+        return;
+#endif
+    buildgl_activeTexture(texunit + GL_TEXTURE0);
+    buildgl_bindTexture(target, texture);
+}
+
 static int32_t      polymer_bindmaterial(const _prmaterial *material, const int16_t* lights, int matlightcount)
 {
     int32_t         programbits;
@@ -5153,6 +5588,9 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
         !(globalflags & GLOBAL_NO_GL_TILESHADES) &&
         (overridematerial & (1 << PR_BIT_ART_MAP))) {
         programbits |= (1 << PR_BIT_ART_MAP);
+#ifdef __ANDROID__
+        if(pr_packedpalette && material->packedlookupmap) programbits |= (1 << PR_BIT_PACKED_PALETTE);
+#endif
     } else
     // PR_BIT_DIFFUSE_MAP
     if (material->diffusemap) {
@@ -5217,9 +5655,39 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
     programbits |= (1 << PR_BIT_FOOTER);
 
     // --------- program compiling
+#ifdef __ANDROID__
+    // Indexed flat planes use one normal for every vertex; it was normalized
+    // in the vertex shader. Models, normal maps and custom specular stay exact.
+    if(pr_fastlight && (programbits&(1<<PR_BIT_ART_MAP)) && (programbits&(1<<PR_BIT_POINT_LIGHT))
+        && !(programbits&(1<<PR_BIT_NORMAL_MAP)) && !(programbits&(1<<PR_BIT_ANIM_INTERPOLATION)))
+        programbits|=(1<<PR_BIT_FAST_LIGHT_MATH);
+#endif
     auto &prprogram = *polymer_getprogram(programbits);
 
-    buildgl_useShaderProgram(prprogram.handle);
+#ifdef __ANDROID__
+    if (gl.currentShaderProgramID != prprogram.handle)
+#endif
+        buildgl_useShaderProgram(prprogram.handle);
+
+#ifdef __ANDROID__
+    bool const initializeSamplers = !(prprogram.androidUniformCacheFlags & 1);
+# define PR_SET_SAMPLER(location, unit) do { if (initializeSamplers) glUniform1i(location, unit); } while (0)
+# define PR_SET_VEC2(location, member, flag, pointer) do { \
+    GLfloat const *value = (pointer); \
+    if (!(prprogram.androidUniformCacheFlags & flag) || Bmemcmp(value, prprogram.member, sizeof(prprogram.member))) { \
+        glUniform2fv(location, 1, value); Bmemcpy(prprogram.member, value, sizeof(prprogram.member)); \
+        prprogram.androidUniformCacheFlags |= flag; \
+    } } while (0)
+# define PR_SET_ART_FLOAT(location, member, flag, expression) do { \
+    GLfloat const value = (expression); \
+    if (!(prprogram.androidUniformCacheFlags & flag) || prprogram.member != value) { \
+        glUniform1f(location, value); prprogram.member = value; prprogram.androidUniformCacheFlags |= flag; \
+    } } while (0)
+#else
+# define PR_SET_SAMPLER(location, unit) glUniform1i(location, unit)
+# define PR_SET_VEC2(location, member, flag, pointer) glUniform2fv(location, 1, pointer)
+# define PR_SET_ART_FLOAT(location, member, flag, expression) glUniform1f(location, expression)
+#endif
 
     // --------- bit setup
 
@@ -5256,10 +5724,26 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
             glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
         }
 
-        glUniform4f(prprogram.uniform_colorCorrection, min(1.0f, g_glColorCorrection.x), g_glColorCorrection.y, g_glColorCorrection.z, g_glColorCorrection.w);
     }
+
+#ifdef __ANDROID__
+    GLfloat const correction[4] = {
+        (programbits & (1 << PR_BIT_LIGHTING_PASS)) ? min(1.0f, g_glColorCorrection.x) : g_glColorCorrection.x,
+        g_glColorCorrection.y, g_glColorCorrection.z, g_glColorCorrection.w
+    };
+    if (!(prprogram.androidUniformCacheFlags & 2)
+        || Bmemcmp(correction, prprogram.androidColorCorrection, sizeof(correction)))
+    {
+        glUniform4fv(prprogram.uniform_colorCorrection, 1, correction);
+        Bmemcpy(prprogram.androidColorCorrection, correction, sizeof(correction));
+        prprogram.androidUniformCacheFlags |= 2;
+    }
+#else
+    if (programbits & (1 << PR_BIT_LIGHTING_PASS))
+        glUniform4f(prprogram.uniform_colorCorrection, min(1.0f, g_glColorCorrection.x), g_glColorCorrection.y, g_glColorCorrection.z, g_glColorCorrection.w);
     else
         glUniform4f(prprogram.uniform_colorCorrection, g_glColorCorrection.x, g_glColorCorrection.y, g_glColorCorrection.z, g_glColorCorrection.w);
+#endif
 
     // PR_BIT_NORMAL_MAP
     if (programbits & (1 << PR_BIT_NORMAL_MAP))
@@ -5270,10 +5754,7 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
         pos[1] = fglobalposz * (-1.f/16.f);
         pos[2] = -fglobalposx;
 
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, (programbits & (1 << PR_BIT_ART_MAP)) ? PTH_INDEXED : PTH_HIGHTILE);
-
-        buildgl_bindTexture(GL_TEXTURE_2D, material->normalmap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, material->normalmap, (programbits & (1 << PR_BIT_ART_MAP)) ? PTH_INDEXED : PTH_HIGHTILE);
 
         if (material->mdspritespace == GL_TRUE) {
             float mdspritespacepos[3];
@@ -5281,11 +5762,11 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
             glUniform3fv(prprogram.uniform_eyePosition, 1, mdspritespacepos);
         } else
             glUniform3fv(prprogram.uniform_eyePosition, 1, pos);
-        glUniform1i(prprogram.uniform_normalMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_normalMap, texunit);
         if (pr_overrideparallax) {
             bias[0] = pr_parallaxscale;
             bias[1] = pr_parallaxbias;
-            glUniform2fv(prprogram.uniform_normalBias, 1, bias);
+            PR_SET_VEC2(prprogram.uniform_normalBias, androidNormalBias, 1024, bias);
         } else
             glUniform2fv(prprogram.uniform_normalBias, 1, material->normalbias);
 
@@ -5314,35 +5795,44 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
     // PR_BIT_ART_MAP
     if (programbits & (1 << PR_BIT_ART_MAP))
     {
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, PTH_INDEXED);
-        buildgl_bindTexture(GL_TEXTURE_2D, material->artmap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, material->artmap, PTH_INDEXED);
 
-        glUniform1i(prprogram.uniform_artMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_artMap, texunit);
 
         texunit++;
 
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, PTH_INDEXED|PTH_CLAMPED);
-        buildgl_bindTexture(GL_TEXTURE_2D, material->basepalmap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, material->basepalmap, PTH_INDEXED|PTH_CLAMPED);
 
-        glUniform1i(prprogram.uniform_basePalMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_basePalMap, texunit);
 
         texunit++;
 
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, PTH_INDEXED|PTH_CLAMPED);
-        buildgl_bindTexture(GL_TEXTURE_RECTANGLE_ARB, material->lookupmap);
+#ifdef __ANDROID__
+        bool const packed=programbits & (1 << PR_BIT_PACKED_PALETTE);
+        polymer_bindmaterialtexture(texunit,PR_RECT_TARGET,packed?material->packedlookupmap:material->lookupmap,PTH_INDEXED|PTH_CLAMPED);
+#else
+        polymer_bindmaterialtexture(texunit, PR_RECT_TARGET, material->lookupmap, PTH_INDEXED|PTH_CLAMPED);
+#endif
 
-        glUniform1i(prprogram.uniform_lookupMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_lookupMap, texunit);
+#ifdef __ANDROID__
+        GLfloat const lookupScale[2] = { 1.f / 256.f, 1.f / numshades };
+        if (!(prprogram.androidUniformCacheFlags & 8)
+            || Bmemcmp(lookupScale, prprogram.androidLookupScale, sizeof(lookupScale)))
+        {
+            glUniform2fv(prprogram.uniform_lookupScale, 1, lookupScale);
+            Bmemcpy(prprogram.androidLookupScale, lookupScale, sizeof(lookupScale));
+            prprogram.androidUniformCacheFlags |= 8;
+        }
+#endif
 
         texunit++;
 
-        glUniform1f(prprogram.uniform_shadeOffset, (GLfloat)material->shadeoffset);
+        PR_SET_ART_FLOAT(prprogram.uniform_shadeOffset, androidShadeOffset, 16, (GLfloat)material->shadeoffset);
         if (r_usenewshading == 4)
         {
             // the fog in Polymer is a sphere insted of a plane, the furthest visible point should be the same as Polymost
-            glUniform1f(prprogram.uniform_visibility, globalvisibility / 262144.f * material->visibility);
+            PR_SET_ART_FLOAT(prprogram.uniform_visibility, androidVisibility, 32, globalvisibility / 262144.f * material->visibility);
         }
         else
         {
@@ -5356,19 +5846,27 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
 
             static constexpr float factor_old = 1.f / ((2048.f * (1.07f / 1.024f) / 35.f) * material_visibility_divisor);
 
-            glUniform1f(prprogram.uniform_visibility, globalvisibility * material->visibility * r_usenewshading > 1 ? factor_new : factor_old);
+            PR_SET_ART_FLOAT(prprogram.uniform_visibility, androidVisibility, 32, globalvisibility * material->visibility * r_usenewshading > 1 ? factor_new : factor_old);
         }
     }
 
     // PR_BIT_DIFFUSE_MAP
     if (programbits & (1 << PR_BIT_DIFFUSE_MAP))
     {
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, (programbits & (1 << PR_BIT_ART_MAP)) ? PTH_INDEXED : PTH_HIGHTILE);
-        buildgl_bindTexture(GL_TEXTURE_2D, material->diffusemap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, material->diffusemap, (programbits & (1 << PR_BIT_ART_MAP)) ? PTH_INDEXED : PTH_HIGHTILE);
 
-        glUniform1i(prprogram.uniform_diffuseMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_diffuseMap, texunit);
+#ifdef __ANDROID__
+        if (!(prprogram.androidUniformCacheFlags & 4)
+            || Bmemcmp(material->diffusescale, prprogram.androidDiffuseScale, sizeof(prprogram.androidDiffuseScale)))
+        {
+            glUniform2fv(prprogram.uniform_diffuseScale, 1, material->diffusescale);
+            Bmemcpy(prprogram.androidDiffuseScale, material->diffusescale, sizeof(prprogram.androidDiffuseScale));
+            prprogram.androidUniformCacheFlags |= 4;
+        }
+#else
         glUniform2fv(prprogram.uniform_diffuseScale, 1, material->diffusescale);
+#endif
 
         texunit++;
     }
@@ -5376,11 +5874,9 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
     // PR_BIT_HIGHPALOOKUP_MAP
     if (programbits & (1 << PR_BIT_HIGHPALOOKUP_MAP))
     {
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, PTH_CLAMPED);
-        buildgl_bindTexture(GL_TEXTURE_3D, material->highpalookupmap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_3D, material->highpalookupmap, PTH_CLAMPED);
 
-        glUniform1i(prprogram.uniform_highPalookupMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_highPalookupMap, texunit);
 
         texunit++;
     }
@@ -5400,12 +5896,10 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
             scale[1] = material->detailscale[1];
         }
 
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, PTH_HIGHTILE);
-        buildgl_bindTexture(GL_TEXTURE_2D, material->detailmap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, material->detailmap, PTH_HIGHTILE);
 
-        glUniform1i(prprogram.uniform_detailMap, texunit);
-        glUniform2fv(prprogram.uniform_detailScale, 1, scale);
+        PR_SET_SAMPLER(prprogram.uniform_detailMap, texunit);
+        PR_SET_VEC2(prprogram.uniform_detailScale, androidDetailScale, 64, scale);
 
         texunit++;
     }
@@ -5422,11 +5916,9 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
     // PR_BIT_SPECULAR_MAP
     if (programbits & (1 << PR_BIT_SPECULAR_MAP))
     {
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, (programbits & (1 << PR_BIT_ART_MAP)) ? PTH_INDEXED : PTH_HIGHTILE);
-        buildgl_bindTexture(GL_TEXTURE_2D, material->specmap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, material->specmap, (programbits & (1 << PR_BIT_ART_MAP)) ? PTH_INDEXED : PTH_HIGHTILE);
 
-        glUniform1i(prprogram.uniform_specMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_specMap, texunit);
 
         texunit++;
     }
@@ -5439,36 +5931,44 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
         if (pr_overridespecular) {
             specmaterial[0] = pr_specularpower;
             specmaterial[1] = pr_specularfactor;
-            glUniform2fv(prprogram.uniform_specMaterial, 1, specmaterial);
+            PR_SET_VEC2(prprogram.uniform_specMaterial, androidSpecMaterial, 128, specmaterial);
         } else
-            glUniform2fv(prprogram.uniform_specMaterial, 1, material->specmaterial);
+            PR_SET_VEC2(prprogram.uniform_specMaterial, androidSpecMaterial, 128, material->specmaterial);
     }
 
     // PR_BIT_MIRROR_MAP
     if (programbits & (1 << PR_BIT_MIRROR_MAP))
     {
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, PTH_CLAMPED);
-        buildgl_bindTexture(GL_TEXTURE_RECTANGLE_ARB, material->mirrormap);
+        polymer_bindmaterialtexture(texunit, PR_RECT_TARGET, material->mirrormap, PTH_CLAMPED);
 
-        glUniform1i(prprogram.uniform_mirrorMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_mirrorMap, texunit);
+#ifdef __ANDROID__
+        GLfloat const mirrorScale[2]={1.f/prrts[0].xdim,1.f/prrts[0].ydim};
+        PR_SET_VEC2(prprogram.uniform_mirrorScale, androidMirrorScale, 256, mirrorScale);
+#endif
 
         texunit++;
     }
 #ifdef PR_LINEAR_FOG
     if (programbits & (1 << PR_BIT_FOG))
     {
+#ifdef __ANDROID__
+        GLint const linearFog = r_usenewshading >= 2;
+        if (!(prprogram.androidUniformCacheFlags & 512) || prprogram.androidLinearFog != linearFog) {
+            glUniform1i(prprogram.uniform_linearFog, linearFog);
+            prprogram.androidLinearFog=linearFog; prprogram.androidUniformCacheFlags |= 512;
+        }
+#else
         glUniform1i(prprogram.uniform_linearFog, r_usenewshading >= 2);
+#endif
     }
 #endif
     // PR_BIT_GLOW_MAP
     if (programbits & (1 << PR_BIT_GLOW_MAP))
     {
-        buildgl_activeTexture(texunit + GL_TEXTURE0);
-        buildgl_bindSamplerObject(texunit, PTH_HIGHTILE|PTH_CLAMPED);
-        buildgl_bindTexture(GL_TEXTURE_2D, material->glowmap);
+        polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, material->glowmap, PTH_HIGHTILE|PTH_CLAMPED);
 
-        glUniform1i(prprogram.uniform_glowMap, texunit);
+        PR_SET_SAMPLER(prprogram.uniform_glowMap, texunit);
 
         texunit++;
     }
@@ -5476,9 +5976,9 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
     // PR_BIT_POINT_LIGHT
     if (programbits & (1 << PR_BIT_POINT_LIGHT))
     {
-        float inpos[4], pos[4];
+        float inpos[4]={0,0,0,1}, pos[4]={0,0,0,1};
         float range[2];
-        float color[4];
+        float color[4]={0,0,0,1};
 
         inpos[0] = (float)prlights[lights[curlight]].y;
         inpos[1] = -(float)prlights[lights[curlight]].z * (1.f/16.f);
@@ -5534,11 +6034,9 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
                 // PR_BIT_SHADOW_MAP
                 if (programbits & (1 << PR_BIT_SHADOW_MAP))
                 {
-                    buildgl_activeTexture(texunit + GL_TEXTURE0);
-                    buildgl_bindSamplerObject(texunit, PTH_DEPTH_SAMPLER);
-                    buildgl_bindTexture(prrts[prlights[lights[curlight]].rtindex].target, prrts[prlights[lights[curlight]].rtindex].z);
+                    polymer_bindmaterialtexture(texunit, prrts[prlights[lights[curlight]].rtindex].target, prrts[prlights[lights[curlight]].rtindex].z, PTH_DEPTH_SAMPLER);
 
-                    glUniform1i(prprogram.uniform_shadowMap, texunit);
+                    PR_SET_SAMPLER(prprogram.uniform_shadowMap, texunit);
 
                     texunit++;
                 }
@@ -5546,11 +6044,9 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
                 // PR_BIT_LIGHT_MAP
                 if (programbits & (1 << PR_BIT_LIGHT_MAP))
                 {
-                    buildgl_activeTexture(texunit + GL_TEXTURE0);
-                    buildgl_bindSamplerObject(texunit, PTH_CLAMPED);
-                    buildgl_bindTexture(GL_TEXTURE_2D, prlights[lights[curlight]].lightmap);
+                    polymer_bindmaterialtexture(texunit, GL_TEXTURE_2D, prlights[lights[curlight]].lightmap, PTH_CLAMPED);
 
-                    glUniform1i(prprogram.uniform_lightMap, texunit);
+                    PR_SET_SAMPLER(prprogram.uniform_lightMap, texunit);
 
                     texunit++;
                 }
@@ -5571,18 +6067,41 @@ static int32_t      polymer_bindmaterial(const _prmaterial *material, const int1
             color[2] = -color[2];
         }
 
+#ifdef __ANDROID__
+        polymer_androidlight(GL_AMBIENT,pos,0,4);
+        polymer_androidlight(GL_DIFFUSE,color,1,4);
+#else
         glLightfv(GL_LIGHT0, GL_AMBIENT, pos);
         glLightfv(GL_LIGHT0, GL_DIFFUSE, color);
+#endif
         if (material->mdspritespace == GL_TRUE) {
-            float mdspritespacepos[3];
+            float mdspritespacepos[4]={0,0,0,1};
             polymer_transformpoint(inpos, mdspritespacepos, (float *)mdspritespace);
+#ifdef __ANDROID__
+            polymer_androidlight(GL_SPECULAR,mdspritespacepos,2,4);
+#else
             glLightfv(GL_LIGHT0, GL_SPECULAR, mdspritespacepos);
+#endif
         } else {
+#ifdef __ANDROID__
+            polymer_androidlight(GL_SPECULAR,inpos,2,4);
+#else
             glLightfv(GL_LIGHT0, GL_SPECULAR, inpos);
+#endif
         }
+#ifdef __ANDROID__
+        polymer_androidlight(GL_LINEAR_ATTENUATION,&range[1],3,1);
+#else
         glLightfv(GL_LIGHT0, GL_LINEAR_ATTENUATION, &range[1]);
+#endif
     }
 
+#ifdef __ANDROID__
+    prprogram.androidUniformCacheFlags |= 1;
+#endif
+#undef PR_SET_SAMPLER
+#undef PR_SET_ART_FLOAT
+#undef PR_SET_VEC2
     buildgl_activeTexture(GL_TEXTURE0);
 
     return programbits;
@@ -5615,7 +6134,10 @@ static void         polymer_unbindmaterial(int32_t programbits)
         glDisableVertexAttribArray(prprogram.attrib_N);
     }
 
-    buildgl_useShaderProgram(0);
+#ifdef __ANDROID__
+    if (androidMaterialBatchDepth == 0)
+#endif
+        buildgl_useShaderProgram(0);
 }
 
 static _prprograminfo *polymer_compileprogram(int32_t programbits)
@@ -5625,6 +6147,7 @@ static _prprograminfo *polymer_compileprogram(int32_t programbits)
     const GLchar*      source[PR_BIT_COUNT * 2];
     GLchar       infobuffer[PR_INFO_LOG_BUFFER_SIZE];
     GLint           linkstatus;
+    GLint           vertstatus = GL_FALSE, fragstatus = GL_FALSE;
 
     // --------- VERTEX
     vert = glCreateShader(GL_VERTEX_SHADER);
@@ -5647,6 +6170,7 @@ static _prprograminfo *polymer_compileprogram(int32_t programbits)
     glShaderSource(vert, enabledbits, source, NULL);
 
     glCompileShader(vert);
+    glGetShaderiv(vert, GL_COMPILE_STATUS, &vertstatus);
 
     // --------- FRAGMENT
     frag = glCreateShader(GL_FRAGMENT_SHADER);
@@ -5669,6 +6193,7 @@ static _prprograminfo *polymer_compileprogram(int32_t programbits)
     glShaderSource(frag, enabledbits, (const GLchar**)source, NULL);
 
     glCompileShader(frag);
+    glGetShaderiv(frag, GL_COMPILE_STATUS, &fragstatus);
 
     // --------- PROGRAM
     program = glCreateProgram();
@@ -5685,6 +6210,20 @@ static _prprograminfo *polymer_compileprogram(int32_t programbits)
     auto &prprogram = *(_prprograminfo *)Xcalloc(1, sizeof(_prprograminfo));
 
     prprogram.handle = program;
+
+#ifdef __ANDROID__
+    if (!vertstatus || !fragstatus || !linkstatus)
+    {
+        glGetShaderInfoLog(vert, PR_INFO_LOG_BUFFER_SIZE, NULL, infobuffer);
+        LOG_F(ERROR, "Polymer vertex shader failed (bits %o, status %d): %s", (unsigned)programbits, vertstatus, infobuffer);
+        glGetShaderInfoLog(frag, PR_INFO_LOG_BUFFER_SIZE, NULL, infobuffer);
+        LOG_F(ERROR, "Polymer fragment shader failed (bits %o, status %d): %s", (unsigned)programbits, fragstatus, infobuffer);
+        glGetProgramInfoLog(program, PR_INFO_LOG_BUFFER_SIZE, NULL, infobuffer);
+        LOG_F(ERROR, "Polymer program link failed (bits %o, status %d): %s", (unsigned)programbits, linkstatus, infobuffer);
+    }
+    else if (pr_verbosity >= 1)
+        LOG_F(INFO, "Polymer shader program linked (bits %o).", (unsigned)programbits);
+#endif
 
 #ifdef DEBUGGINGAIDS
     if (pr_verbosity >= 1)
@@ -5739,6 +6278,9 @@ static _prprograminfo *polymer_compileprogram(int32_t programbits)
         prprogram.uniform_artMap      = glGetUniformLocation(program, "artMap");
         prprogram.uniform_basePalMap = glGetUniformLocation(program, "basePalMap");
         prprogram.uniform_lookupMap = glGetUniformLocation(program, "lookupMap");
+#ifdef __ANDROID__
+        prprogram.uniform_lookupScale = glGetUniformLocation(program, "lookupScale");
+#endif
         prprogram.uniform_shadeOffset = glGetUniformLocation(program, "shadeOffset");
         prprogram.uniform_visibility  = glGetUniformLocation(program, "visibility");
     }
@@ -5759,7 +6301,13 @@ static _prprograminfo *polymer_compileprogram(int32_t programbits)
 
     if (programbits & (1 << PR_BIT_SPECULAR_MAP))      prprogram.uniform_specMap          = glGetUniformLocation(program, "specMap");
     if (programbits & (1 << PR_BIT_SPECULAR_MATERIAL)) prprogram.uniform_specMaterial     = glGetUniformLocation(program, "specMaterial");
-    if (programbits & (1 << PR_BIT_MIRROR_MAP))        prprogram.uniform_mirrorMap        = glGetUniformLocation(program, "mirrorMap");
+    if (programbits & (1 << PR_BIT_MIRROR_MAP))
+    {
+        prprogram.uniform_mirrorMap = glGetUniformLocation(program, "mirrorMap");
+#ifdef __ANDROID__
+        prprogram.uniform_mirrorScale = glGetUniformLocation(program, "mirrorScale");
+#endif
+    }
 #ifdef PR_LINEAR_FOG
     if (programbits & (1 << PR_BIT_FOG))               prprogram.uniform_linearFog        = glGetUniformLocation(program, "linearFog");
 #endif
@@ -6312,14 +6860,14 @@ static void         polymer_initrendertargets(int32_t count)
     while (i < count)
     {
         if (!i) {
-            prrts[i].target = GL_TEXTURE_RECTANGLE_ARB;
+            prrts[i].target = PR_RECT_TARGET;
             prrts[i].xdim = xdim;
             prrts[i].ydim = ydim;
 
             glGenTextures(1, &prrts[i].color);
             buildgl_bindTexture(prrts[i].target, prrts[i].color);
 
-            glTexImage2D(prrts[i].target, 0, GL_RGB, prrts[i].xdim, prrts[i].ydim, 0, GL_RGB, GL_SHORT, NULL);
+            glTexImage2D(prrts[i].target, 0, GL_RGB, prrts[i].xdim, prrts[i].ydim, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
             glTexParameteri(prrts[i].target, GL_TEXTURE_BASE_LEVEL, 0);
             glTexParameteri(prrts[i].target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(prrts[i].target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -6335,7 +6883,7 @@ static void         polymer_initrendertargets(int32_t count)
                 glGenTextures(1, &prrts[i].color);
                 buildgl_bindTexture(prrts[i].target, prrts[i].color);
 
-                glTexImage2D(prrts[i].target, 0, GL_RGB, prrts[i].xdim, prrts[i].ydim, 0, GL_RGB, GL_SHORT, NULL);
+                glTexImage2D(prrts[i].target, 0, GL_RGB, prrts[i].xdim, prrts[i].ydim, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
                 glTexParameteri(prrts[i].target, GL_TEXTURE_BASE_LEVEL, 0);
                 glTexParameteri(prrts[i].target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(prrts[i].target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -6347,15 +6895,18 @@ static void         polymer_initrendertargets(int32_t count)
         glGenTextures(1, &prrts[i].z);
         buildgl_bindTexture(prrts[i].target, prrts[i].z);
 
-        glTexImage2D(prrts[i].target, 0, GL_DEPTH_COMPONENT, prrts[i].xdim, prrts[i].ydim, 0, GL_DEPTH_COMPONENT, GL_SHORT, NULL);
+        glTexImage2D(prrts[i].target, 0, GL_DEPTH_COMPONENT, prrts[i].xdim, prrts[i].ydim, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, NULL);
         glTexParameteri(prrts[i].target, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(prrts[i].target, GL_TEXTURE_MIN_FILTER, pr_shadowfiltering ? GL_LINEAR : GL_NEAREST);
         glTexParameteri(prrts[i].target, GL_TEXTURE_MAG_FILTER, pr_shadowfiltering ? GL_LINEAR : GL_NEAREST);
         glTexParameteri(prrts[i].target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(prrts[i].target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(prrts[i].target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
-        glTexParameteri(prrts[i].target, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
-        glTexParameteri(prrts[i].target, GL_DEPTH_TEXTURE_MODE, GL_ALPHA);
+        if (i && glinfo.shadow)
+        {
+            glTexParameteri(prrts[i].target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
+            glTexParameteri(prrts[i].target, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+            glTexParameteri(prrts[i].target, GL_DEPTH_TEXTURE_MODE, GL_ALPHA);
+        }
 
         glGenFramebuffersEXT(1, &prrts[i].fbo);
         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, prrts[i].fbo);

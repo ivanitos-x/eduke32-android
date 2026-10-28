@@ -157,6 +157,9 @@ G_EXTERN playerspawn_t g_playerSpawnPoints[MAXPLAYERS];
 G_EXTERN input_t inputfifo[MOVEFIFOSIZ][MAXPLAYERS];
 #pragma pack(pop)
 
+// BloodCM 12.2016 relies on pre-r6974 projectile damage and pre-r8787 animation strides.
+// Enabled by the Android BloodCM preset only; ordinary Duke retains current semantics.
+G_EXTERN int32_t g_bloodCMCompat;
 G_EXTERN int32_t g_noEnemies;
 G_EXTERN int32_t g_restorePalette;
 G_EXTERN int32_t g_screenCapture;

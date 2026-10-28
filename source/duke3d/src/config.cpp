@@ -271,7 +271,12 @@ void CONFIG_SetDefaults(void)
     ud.config.JoystickViewCentering = 4;
     ud.config.JoystickAimAssist = 1;
     ud.config.MouseBias       = 0;
+#ifdef __ANDROID__
+    ud.config.MusicDevice     = ASS_SF2;
+    Bstrcpy(SF2_BankFile, "GeneralUser GS SoftSynth v1.44.sf2");
+#else
     ud.config.MusicDevice     = ASS_AutoDetect;
+#endif
     ud.config.MusicToggle     = 1;
     ud.config.MusicVolume     = 195;
     ud.config.NumBits         = 16;
@@ -810,6 +815,17 @@ int CONFIG_ReadSetup(void)
 
     SCRIPT_GetNumber(ud.config.scripthandle, "Controls", "UseJoystick", &ud.setup.usejoystick);
     SCRIPT_GetNumber(ud.config.scripthandle, "Controls", "UseMouse", &ud.setup.usemouse);
+#ifdef __ANDROID__
+    struct TouchValue { char const *key; float *value; };
+    TouchValue touchValues[] = {{"LookSensitivity", &droidinput.pitch_sens}, {"TurnSensitivity", &droidinput.yaw_sens},
+        {"MoveSensitivity", &droidinput.forward_sens}, {"StrafeSensitivity", &droidinput.strafe_sens}};
+    for (auto const &entry : touchValues) {
+        double value = *entry.value;
+        SCRIPT_GetDouble(ud.config.scripthandle, "Android Touch", entry.key, &value);
+        if (value >= 1.0 && value <= 9.0) *entry.value = (float)value;
+    }
+    LOG_F(INFO, "Android touch sensitivity loaded: turn=%.1f look=%.1f", droidinput.yaw_sens, droidinput.pitch_sens);
+#endif
 
     // restore localization
     char locale[64] = "en";
@@ -907,6 +923,23 @@ void CONFIG_WriteSettings(void) // save binds and aliases to <cfgname>_settings.
 
     LOG_F(ERROR, "Unable to write %s: %s.", filename, strerror(errno));
 }
+
+#ifdef __ANDROID__
+static void CONFIG_PutAndroidTouchSettings(void)
+{
+    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "LookSensitivity", droidinput.pitch_sens, FALSE);
+    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "TurnSensitivity", droidinput.yaw_sens, FALSE);
+    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "MoveSensitivity", droidinput.forward_sens, FALSE);
+    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "StrafeSensitivity", droidinput.strafe_sens, FALSE);
+}
+void CONFIG_SaveAndroidTouchSettings(void)
+{
+    // Called by menu code on the game thread, never from Java/UI callbacks.
+    if (ud.config.setupread != 2 || ud.config.scripthandle < 0) return;
+    CONFIG_PutAndroidTouchSettings();
+    SCRIPT_Save(ud.config.scripthandle, g_setupFileName);
+}
+#endif
 
 void CONFIG_WriteSetup(uint32_t flags)
 {
@@ -1031,6 +1064,9 @@ void CONFIG_WriteSetup(uint32_t flags)
         SCRIPT_PutString(ud.config.scripthandle, "Comm Setup",commmacro,&ud.ridecule[dummy][0]);
     }
 
+#ifdef __ANDROID__
+    CONFIG_PutAndroidTouchSettings();
+#endif
     // save localization
     const char* locale = localeGetCurrent();
     SCRIPT_PutString(ud.config.scripthandle, "Misc", "Locale", locale ? locale : "en");

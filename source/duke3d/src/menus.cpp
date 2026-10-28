@@ -431,7 +431,7 @@ static MenuEntry_t *MEL_SKILL[MAXSKILLS];
 
 #ifdef EDUKE32_RETAIL_MENU
 static MenuLink_t MEO_GAMESETUP_SAVESETUP = { MENU_SAVESETUP, MA_Advance, };
-static MenuEntry_t ME_GAMESETUP_SAVESETUP = MAKE_MENUENTRY( "Save setup", &MF_Redfont, &MEF_BigOptionsRt, &MEO_GAMESETUP_SAVESETUP, Link );
+static MenuEntry_t ME_GAMESETUP_SAVESETUP = MAKE_MENUENTRY( "Save setup", &MF_Redfont, &MEF_OptionsMenu, &MEO_GAMESETUP_SAVESETUP, Link );
 #endif
 
 #if defined STARTUP_SETUP_WINDOW && !defined EDUKE32_RETAIL_MENU
@@ -519,6 +519,9 @@ MAKE_MENU_TOP_ENTRYLINK( "Mouse Setup", MEF_BigOptionsRtSections, OPTIONS_MOUSES
 MAKE_MENU_TOP_ENTRYLINK( "Controller Setup", MEF_BigOptionsRtSections, OPTIONS_JOYSTICKSETUP, MENU_JOYSTICKSETUP );
 #ifdef EDUKE32_ANDROID_MENU
 MAKE_MENU_TOP_ENTRYLINK( "Touch Setup", MEF_BigOptionsRtSections, OPTIONS_TOUCHSETUP, MENU_TOUCHSETUP );
+// The same entry appears in both Options and the controls page. Give the
+// top-level Options list its own format so it lines up with its sibling rows.
+static MenuEntry_t ME_OPTIONS_TOUCHSETUP_TOP = MAKE_MENUENTRY( "Touch Setup", &MF_Redfont, &MEF_OptionsMenu, &MEO_OPTIONS_TOUCHSETUP, Link );
 #endif
 #ifdef EDUKE32_RETAIL_MENU
 MAKE_MENU_TOP_ENTRYLINK("Cheats", MEF_OptionsMenu, OPTIONS_CHEATS, MENU_CHEATS);
@@ -779,7 +782,7 @@ static MenuEntry_t *MEL_OPTIONS[] = {
 #endif
     &ME_OPTIONS_CONTROLS,
 #else
-    &ME_OPTIONS_TOUCHSETUP,
+    &ME_OPTIONS_TOUCHSETUP_TOP,
 #endif
 #ifdef EDUKE32_RETAIL_MENU
     &ME_GAMESETUP_SAVESETUP,
@@ -836,8 +839,10 @@ static MenuEntry_t *MEL_DISPLAYSETUP[] = {
     &ME_DISPLAYSETUP_FOV,
     &ME_DISPLAYSETUP_VOXELS,
 #else
+#ifdef USE_OPENGL
     &ME_DISPLAYSETUP_HIDEDPAD,
     &ME_DISPLAYSETUP_TOUCHALPHA,
+#endif
 #endif
     &ME_DISPLAYSETUP_UPSCALING,
 #if !defined EDUKE32_RETAIL_MENU && defined USE_OPENGL
@@ -1859,7 +1864,11 @@ void Menu_PopulateNewGameCustomL3(int e, int s)
 
 static void Menu_PopulateJoystick(void)
 {
-    for (int i = 0; i < joystick.numButtons + 4*joystick.numHats + 2*joystick.isGameController; ++i)
+    // Android system/input devices may expose buttons but no controller axes.
+    // Only append trigger bindings whose axis index exists (SDL axes 4 and 5).
+    int const triggerCount = joystick.isGameController ? clamp(joystick.numAxes-4,0,2) : 0;
+    int const bindingCount = joystick.numButtons + 4*joystick.numHats + triggerCount;
+    for (int i = 0; i < bindingCount; ++i)
     {
         if (i < joystick.numButtons)
         {
@@ -1871,9 +1880,8 @@ static void Menu_PopulateJoystick(void)
             }
 
             auto const name = joyGetName(1, i);
-            Bassert(name != nullptr);
-
-            Bstrncpy(MenuJoystickNames[i], name, MAXJOYBUTTONSTRINGLENGTH);
+            if(name) Bstrncpyz(MenuJoystickNames[i],name,MAXJOYBUTTONSTRINGLENGTH);
+            else Bsnprintf(MenuJoystickNames[i],MAXJOYBUTTONSTRINGLENGTH,"Button %d",i+1);
         }
         else
         {
@@ -1884,9 +1892,10 @@ static void Menu_PopulateJoystick(void)
             }
             else if (joystick.isGameController)
             {
-                auto const name = joyGetName(0, i - joystick.numButtons + 4);
-                Bassert(name != nullptr);
-                Bstrncpy(MenuJoystickNames[i], name, MAXJOYBUTTONSTRINGLENGTH);
+                int const axis = i - joystick.numButtons - 4*joystick.numHats + 4;
+                auto const name = joyGetName(0,axis);
+                if(name) Bstrncpyz(MenuJoystickNames[i],name,MAXJOYBUTTONSTRINGLENGTH);
+                else Bsnprintf(MenuJoystickNames[i],MAXJOYBUTTONSTRINGLENGTH,"Trigger %d",axis-3);
             }
         }
 
@@ -1902,14 +1911,14 @@ static void Menu_PopulateJoystick(void)
             MEO_JOYSTICKBTNS[i].data = &ud.config.JoystickDigitalFunctions[i - joystick.numButtons - 4*joystick.numHats + 4][1];
     }
 
-    M_JOYSTICKBTNS.numEntries = joystick.numButtons + 4*joystick.numHats + 2*joystick.isGameController;
+    M_JOYSTICKBTNS.numEntries = bindingCount;
 
     for (int i = 0; i < joystick.numAxes; ++i)
     {
         auto const name = joyGetName(0, i);
-        Bassert(name != nullptr);
         ME_JOYSTICKAXES[i] = ME_JOYSTICKAXES_TEMPLATE;
-        Bstrncpy(MenuJoystickAxes[i], name, MAXJOYBUTTONSTRINGLENGTH);
+        if(name) Bstrncpyz(MenuJoystickAxes[i],name,MAXJOYBUTTONSTRINGLENGTH);
+        else Bsnprintf(MenuJoystickAxes[i],MAXJOYBUTTONSTRINGLENGTH,"Axis %d",i+1);
         ME_JOYSTICKAXES[i].name = MenuJoystickAxes[i];
         MEL_JOYSTICKAXES[i] = &ME_JOYSTICKAXES[i];
     }
@@ -2583,7 +2592,7 @@ static void Menu_Pre(MenuID_t cm)
         MenuEntry_HideOnCondition(&ME_DISPLAYSETUP_VOXELS, !g_haveVoxels);
 #ifdef USE_OPENGL
         MenuEntry_HideOnCondition(&ME_DISPLAYSETUP_UPSCALING, videoGetRenderMode() > REND_CLASSIC);
-#ifndef EDUKE32_STANDALONE
+#if !defined EDUKE32_STANDALONE && !defined EDUKE32_RETAIL_MENU
         MenuEntry_HideOnCondition(&ME_DISPLAYSETUP_RENDERER, videoGetRenderMode() < REND_POLYMOST);
 #endif
 #ifdef TEXFILTER_MENU_OPTIONS
@@ -4376,6 +4385,11 @@ static int32_t Menu_EntryRangeFloatModify(MenuEntry_t *entry, float newValue)
 
 static int32_t Menu_EntryRangeFloatDidModify(MenuEntry_t *entry)
 {
+#ifdef __ANDROID__
+    if (entry == &ME_TOUCHSETUP_SENSITIVITY_LOOK || entry == &ME_TOUCHSETUP_SENSITIVITY_TURN
+        || entry == &ME_TOUCHSETUP_SENSITIVITY_MOVE || entry == &ME_TOUCHSETUP_SENSITIVITY_STRAFE)
+        CONFIG_SaveAndroidTouchSettings();
+#endif
     if (entry == &ME_COLCORR_GAMMA)
     {
         ud.brightness = GAMMA_CALC<<2;
@@ -8158,6 +8172,12 @@ void M_DisplayMenus(void)
         Menu_AnimateChange(MENU_QUIT, MA_Advance);
 
     int32_t mousestatus = mouseReadAbs(&m_mousepos, &g_mouseAbs);
+#ifdef __ANDROID__
+    // Preserve the press location even if a short tap's DOWN and UP were both
+    // consumed before this menu frame. Release hit-testing needs both points.
+    if (mousestatus && g_mouseClickState == MOUSE_RELEASED)
+        mouseReadAbs(&m_mousedownpos, &g_androidMouseDownAbs);
+#endif
     if (mousestatus && g_mouseClickState == MOUSE_PRESSED)
         m_mousedownpos = m_mousepos;
 

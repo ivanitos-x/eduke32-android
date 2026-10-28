@@ -11973,6 +11973,18 @@ int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daups
 #endif
     if (videoSetMode(daupscaledxdim,daupscaledydim,dabpp,davidoption) < 0) return -1;
 
+#if defined(__ANDROID__) && defined(USE_OPENGL)
+    // SDL can resolve a requested mode (e.g. 1280x720) to the native Android
+    // surface. GL draws directly into that surface; it has no software scaler.
+    if (dabpp > 8)
+    {
+        LOG_F(INFO, "Android GL game mode: requested %dx%d, using surface %dx%d.",
+              daupscaledxdim, daupscaledydim, xres, yres);
+        daupscaledxdim = xres;
+        daupscaledydim = yres;
+    }
+#endif
+
     // Workaround possible bugs in the GL driver
     makeasmwriteable();
 
@@ -11990,6 +12002,26 @@ int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daups
     {
         scalefactor = 1;
     }
+#if defined(__ANDROID__) && defined(RENDERTYPESDL)
+    if (dabpp == 8 && xres > 0 && yres > 0)
+    {
+        // Every Classic pixel (world, weapon and 2D menus) is finally stretched
+        // to the native surface. Match that surface aspect at the source instead
+        // of compensating only drawrooms' camera. Keep approximately the same
+        // render pixel budget, including the requested detail/upscale divisor.
+        double const pixels = double(daupscaledxdim) * daupscaledydim / (double(scalefactor) * scalefactor);
+        double scale = sqrt(pixels / (double(xres) * yres));
+        scale = max(scale, max(640.0/xres, 400.0/yres));
+        // Nearest 8 avoids a one-column rounding growth on every resume.
+        int32_t const minimumWidth = (int32_t(ceil(max(640.0,400.0*xres/yres)))+7)&~7;
+        int32_t const bufferWidth = max(minimumWidth,int32_t(xres*scale/8.0 + .5)*8);
+        int32_t const bufferHeight = max(400, int32_t(double(bufferWidth)*yres/xres + .5));
+        daupscaledxdim = bufferWidth*scalefactor;
+        daupscaledydim = bufferHeight*scalefactor;
+        LOG_F(INFO, "Android Classic square pixels: requested budget %.0f, surface %dx%d, buffer %dx%d (detail %d)",
+              pixels, xres, yres, bufferWidth, bufferHeight, scalefactor);
+    }
+#endif
     xdim = daupscaledxdim/scalefactor;
     ydim = daupscaledydim/scalefactor;
 
@@ -12023,10 +12055,10 @@ int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daups
             PolymostProcessVoxels();
     }
 # ifdef POLYMER
-    if (videoGetRenderMode() == REND_POLYMER)
+    if (videoGetRenderMode() == REND_POLYMER && !polymer_init())
     {
-        if (!polymer_init())
-            rendmode = REND_POLYMOST;
+        LOG_F(ERROR, "Polymer initialization failed; refusing to silently switch to Polymost.");
+        return -1;
     }
 #endif
 #endif
@@ -12502,6 +12534,32 @@ fix16_t __fastcall gethiq16angle(int32_t xvect, int32_t yvect)
 
     return rv;
 }
+
+#ifdef __ANDROID__
+// Worker-safe equivalent: the original scale() writes shared libdivide caches.
+// qradarang is immutable after engine initialization.
+fix16_t __fastcall gethiq16angle_threadsafe(int32_t xvect, int32_t yvect)
+{
+    fix16_t rv;
+
+    if ((xvect | yvect) == 0)
+        rv = 0;
+    else if (xvect == 0)
+        rv = F16(512) + fix16_from_int(((yvect < 0) << 10));
+    else if (yvect == 0)
+        rv = fix16_from_int(((xvect < 0) << 10));
+    else if (xvect == yvect)
+        rv = F16(256) + fix16_from_int(((xvect < 0) << 10));
+    else if (xvect == -yvect)
+        rv = F16(768) + fix16_from_int(((xvect > 0) << 10));
+    else if (klabs(xvect) > klabs(yvect))
+        rv = ((qradarang[5120 + int32_t((int64_t(1280) * yvect) / xvect)] >> 6) + fix16_from_int(((xvect < 0) << 10))) & 0x7FFFFFF;
+    else rv = ((qradarang[5120 - int32_t((int64_t(1280) * xvect) / yvect)] >> 6) + F16(512) + fix16_from_int(((yvect < 0) << 10))) & 0x7FFFFFF;
+
+    return rv;
+}
+
+#endif
 
 fix16_t __fastcall getq16angledelta(fix16_t first, fix16_t second)
 {
@@ -13734,9 +13792,35 @@ void videoSetCorrectedAspect()
 
             if (screenw==0 || screenh==0)
             {
-                // Assume square pixel aspect.
-                x = xd;
-                y = yd;
+#ifdef __ANDROID__
+                if (videoGetRenderMode() == REND_CLASSIC && !offscreenrendering
+                    && xres > 0 && yres > 0)
+                {
+                    // The software framebuffer can retain a requested 16:9
+                    // resolution while SDL scales it to a wider phone surface.
+                    // Project for the physical output, compensating the buffer's
+                    // non-square displayed pixels, just as an explicit screen
+                    // aspect override does below. Keep the software resolution.
+                    vec2_t const output = softsurface_getDestinationBufferResolution();
+                    x = output.x > 0 ? output.x : xres;
+                    y = output.y > 0 ? output.y : yres;
+                    int32_t const pixratio = divscale16(xd * y, yd * x);
+                    yx = divscale16(yx, pixratio);
+                    static int32_t lastBufferX, lastBufferY, lastOutputX, lastOutputY;
+                    if (lastBufferX != xd || lastBufferY != yd || lastOutputX != x || lastOutputY != y)
+                    {
+                        LOG_F(INFO, "Android classic aspect: buffer %dx%d, output %dx%d; projection corrected", xd, yd, x, y);
+                        lastBufferX = xd; lastBufferY = yd;
+                        lastOutputX = x; lastOutputY = y;
+                    }
+                }
+                else
+#endif
+                {
+                    // Assume square pixel aspect.
+                    x = xd;
+                    y = yd;
+                }
             }
             else
             {
@@ -14983,7 +15067,10 @@ int32_t videoSetRenderMode(int32_t renderer)
         PolymerProcessModels();
 
         if (!polymer_init())
-            renderer = REND_POLYMOST;
+        {
+            LOG_F(ERROR, "Polymer initialization failed; keeping the current renderer.");
+            return -1;
+        }
     }
     else if (videoGetRenderMode() == REND_POLYMER)  // going from Polymer to another renderer
     {

@@ -997,7 +997,10 @@ static int A_ShootCustom(int const spriteNum, int const projecTile, int shootAng
                 startPos->y + tabledivide32_noinline(sintable[(shootAng + 348) & 2047], pProj->offset),
                 startPos->z - (1 << 8), projecTile, 0, 14, 14, shootAng, pProj->vel, zvel, spriteNum, 4);
 
-            sprite[otherSprite].extra = Proj_GetDamage(pProj);
+            // BloodCM supplies continuous damage in CON; the old RPG path left
+            // spawn damage intact unless PROJECTILE_RPG_IMPACT was requested.
+            if (!g_bloodCMCompat || (pProj->workslike & PROJECTILE_RPG_IMPACT))
+                sprite[otherSprite].extra = Proj_GetDamage(pProj);
 
             if (!(pProj->workslike & PROJECTILE_BOUNCESOFFWALLS))
                 sprite[otherSprite].yvel = l;  // NOT_BOUNCESOFFWALLS_YVEL
@@ -3070,6 +3073,12 @@ void P_UpdateAngles(int const playerNum, input_t &input)
 
     thisPlayer.lastViewUpdate = currentNanoTicks;
 
+#ifdef __ANDROID__
+    // Preserve ordinary frame timing, but discard most of a long renderer
+    // stall instead of turning through the entire blocked interval at once.
+    if (elapsedInputTicks > timerGetNanoTickRate() / 10)
+        elapsedInputTicks = timerGetNanoTickRate() / REALGAMETICSPERSEC;
+#endif
     auto scaleToInterval = [=](double x) { return x * REALGAMETICSPERSEC / ((double)timerGetNanoTickRate() / min<double>(elapsedInputTicks, timerGetNanoTickRate())); };
 
     int const movementLocked = P_CheckLockedMovement(playerNum);
@@ -3193,6 +3202,52 @@ void P_UpdateAngles(int const playerNum, input_t &input)
 }
 
 
+#ifdef __ANDROID__
+static bool P_AndroidTickMovementEnabled(int playerNum)
+{
+    return playerNum == myconnectindex && !g_netClient && !g_netServer
+        && ud.multimode < 2 && ud.recstat == 0;
+}
+
+// Read held touch directions once per physics tick, never once per video
+// frame. g_player[].input is copied from the FIFO afresh before every call,
+// so this contribution cannot accumulate when several ticks share a frame.
+void P_ApplyAndroidTouchMovement(int playerNum)
+{
+    if (!P_AndroidTickMovementEnabled(playerNum)) return;
+    auto &thisPlayer = g_player[playerNum];
+    auto const pPlayer = thisPlayer.ps;
+    if (ud.pause_on || g_cheatBufLen > 1 || !(pPlayer->gm & MODE_GAME)
+        || (pPlayer->gm & (MODE_MENU | MODE_TYPE | MODE_DEMO))
+        || (ud.scrollmode && ud.overhead_on) || (P_CheckLockedMovement(playerNum) & IL_NOMOVE)
+        || BUTTON(gamefunc_Dpad_Select))
+        return;
+
+    uint64_t const held = AndroidHeldButtons();
+    auto const pressed = [held](int action) { return int((held >> action) & 1); };
+    int const running = ud.runkey_mode ? (BUTTON(gamefunc_Run) | ud.auto_run)
+                                      : (ud.auto_run ^ BUTTON(gamefunc_Run));
+    int const keyMove = running ? NORMALKEYMOVE * 2 : NORMALKEYMOVE;
+    float stickSide, stickForward;
+    AndroidMovement(&stickSide, &stickForward);
+    int const forward = BUTTON(gamefunc_Dpad_Aiming) ? 0
+        : keyMove * (pressed(gamefunc_Move_Forward) - pressed(gamefunc_Move_Backward))
+          + (int)lrintf(keyMove * stickForward);
+    int const side = keyMove * (pressed(gamefunc_Strafe_Left) - pressed(gamefunc_Strafe_Right))
+        - (int)lrintf(keyMove * stickSide);
+    auto &input = thisPlayer.input;
+    int const angle = fix16_to_int(pPlayer->q16ang);
+    input.fvel += mulscale9(forward, sintable[(angle + 2560) & 2047])
+                + mulscale9(side, sintable[(angle + 2048) & 2047]);
+    input.svel += mulscale9(forward, sintable[(angle + 2048) & 2047])
+                + mulscale9(side, sintable[(angle + 1536) & 2047]);
+    input.extbits |= (pressed(gamefunc_Move_Forward) || stickForward > 0) << EK_MOVE_FORWARD;
+    input.extbits |= (pressed(gamefunc_Move_Backward) || stickForward < 0) << EK_MOVE_BACKWARD;
+    input.extbits |= (pressed(gamefunc_Strafe_Left) || stickSide < 0) << EK_STRAFE_LEFT;
+    input.extbits |= (pressed(gamefunc_Strafe_Right) || stickSide > 0) << EK_STRAFE_RIGHT;
+}
+#endif
+
 void P_GetInput(int const playerNum)
 {
     auto      &thisPlayer = g_player[playerNum];
@@ -3229,6 +3284,25 @@ void P_GetInput(int const playerNum)
     }
 
     CONTROL_GetInput(&info);
+
+    // The touch d-pad contributes in P_ApplyAndroidTouchMovement instead.
+    // Keep keyboard/controller movement in this existing input path.
+#ifdef __ANDROID__
+    // Demo recording and network play use the ordinary synchronized input path.
+    if (!P_AndroidTickMovementEnabled(playerNum)) {
+        float stickSide, stickForward;
+        AndroidMovement(&stickSide, &stickForward);
+        info.dx += (int)lrintf(stickSide * 32767.f);
+        info.dz -= (int)lrintf(stickForward * 32767.f);
+    }
+    uint64_t const tickTouchButtons = P_AndroidTickMovementEnabled(playerNum)
+        ? (droidinput.functionHeld | droidinput.functionSticky) : 0;
+    auto movementButton = [tickTouchButtons](int action) {
+        return BUTTON(action) && !(tickTouchButtons & (uint64_t(1) << action));
+    };
+#else
+    auto movementButton = [](int action) { return BUTTON(action) != 0; };
+#endif
 
     if (ud.config.MouseBias)
     {
@@ -3281,6 +3355,12 @@ void P_GetInput(int const playerNum)
 
     g_lastInputTicks = currentNanoTicks;
 
+#ifdef __ANDROID__
+    // Preserve ordinary frame timing, but discard most of a long renderer
+    // stall instead of turning through the entire blocked interval at once.
+    if (elapsedInputTicks > timerGetNanoTickRate() / 10)
+        elapsedInputTicks = timerGetNanoTickRate() / REALGAMETICSPERSEC;
+#endif
     auto scaleToInterval = [=](double x) { return x * REALGAMETICSPERSEC / ((double)timerGetNanoTickRate() / min<double>(elapsedInputTicks, timerGetNanoTickRate())); };
 
     if (BUTTON(gamefunc_Strafe))
@@ -3344,19 +3424,19 @@ void P_GetInput(int const playerNum)
 
     if (localInput.svel < keyMove && localInput.svel > -keyMove)
     {
-        if (BUTTON(gamefunc_Strafe_Left) && !(pPlayer->movement_lock & 4))
+        if (movementButton(gamefunc_Strafe_Left) && !(pPlayer->movement_lock & 4))
             input.svel += keyMove;
 
-        if (BUTTON(gamefunc_Strafe_Right) && !(pPlayer->movement_lock & 8))
+        if (movementButton(gamefunc_Strafe_Right) && !(pPlayer->movement_lock & 8))
             input.svel += -keyMove;
     }
 
     if (localInput.fvel < keyMove && localInput.fvel > -keyMove)
     {
-        if (BUTTON(gamefunc_Move_Forward) && !(pPlayer->movement_lock & 1))
+        if (movementButton(gamefunc_Move_Forward) && !(pPlayer->movement_lock & 1))
             input.fvel += keyMove;
 
-        if (BUTTON(gamefunc_Move_Backward) && !(pPlayer->movement_lock & 2))
+        if (movementButton(gamefunc_Move_Backward) && !(pPlayer->movement_lock & 2))
             input.fvel += -keyMove;
     }
 
@@ -3447,10 +3527,10 @@ void P_GetInput(int const playerNum)
     if (PWEAPON(playerNum, pPlayer->curr_weapon, Flags) & WEAPON_SEMIAUTO && BUTTON(gamefunc_Fire))
         CONTROL_ClearButton(gamefunc_Fire);
 
-    localInput.extbits |= (BUTTON(gamefunc_Move_Forward) || (input.fvel > 0)) << EK_MOVE_FORWARD;
-    localInput.extbits |= (BUTTON(gamefunc_Move_Backward) || (input.fvel < 0)) << EK_MOVE_BACKWARD;
-    localInput.extbits |= (BUTTON(gamefunc_Strafe_Left) || (input.svel > 0)) << EK_STRAFE_LEFT;
-    localInput.extbits |= (BUTTON(gamefunc_Strafe_Right) || (input.svel < 0)) << EK_STRAFE_RIGHT;
+    localInput.extbits |= (movementButton(gamefunc_Move_Forward) || (input.fvel > 0)) << EK_MOVE_FORWARD;
+    localInput.extbits |= (movementButton(gamefunc_Move_Backward) || (input.fvel < 0)) << EK_MOVE_BACKWARD;
+    localInput.extbits |= (movementButton(gamefunc_Strafe_Left) || (input.svel > 0)) << EK_STRAFE_LEFT;
+    localInput.extbits |= (movementButton(gamefunc_Strafe_Right) || (input.svel < 0)) << EK_STRAFE_RIGHT;
     localInput.extbits |= BUTTON(gamefunc_Turn_Left) << EK_TURN_LEFT;
     localInput.extbits |= BUTTON(gamefunc_Turn_Right) << EK_TURN_RIGHT;
     localInput.extbits |= BUTTON(gamefunc_Alt_Fire) << EK_ALT_FIRE;

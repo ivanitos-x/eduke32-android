@@ -29,7 +29,6 @@ extern "C"
 #define PRECISIONSHOOTFACTOR        0.3f
 
 // where do these numbers come from?
-#define ANDROIDMOVEFACTOR           6400
 #define ANDROIDLOOKFACTOR          1600
 
 #define ANDROIDPITCHFACTORJOYSTICK          2000
@@ -77,7 +76,6 @@ typedef struct
 
     double pitch, yaw;
     double pitch_joystick, yaw_joystick;
-    float forwardmove, sidemove;
 
     // set by configuration UI
     float strafe_sens, forward_sens;
@@ -101,11 +99,18 @@ int AndroidKeyEvent(int state, int code, int unicode);
 int AndroidRead(portableread_t r);
 
 void AndroidAction(int state, int action);
+void AndroidResetButtons(void);
+uint64_t AndroidHeldButtons(void);
+void AndroidPublishTouchMode(void);
+int AndroidPublishedTouchMode(void);
 
 void AndroidMouseMenu(float x,float y);
 void AndroidMouseMenuButton(int state,int button);
 
-void AndroidMove(float fwd, float strafe);
+void AndroidReportRenderWork(uint64_t workNanos, uint64_t targetNanos);
+void AndroidClosePerformanceSession(void);
+void AndroidMove(float strafe, float forward);
+void AndroidMovement(float *strafe, float *forward);
 void AndroidLook(float yaw, float pitch);
 void AndroidLookJoystick(float yaw, float pitch);
 void AndroidOSD(const char * cmd);

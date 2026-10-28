@@ -799,6 +799,10 @@ static void G_ShowCacheLocks(void)
 
 #define FPS_COLOR(x) ((x) ? COLOR_RED : COLOR_WHITE)
 
+#ifdef __ANDROID__
+extern void G_DrawAndroidFPS(void);
+#endif
+
 static void G_PrintFPS(void)
 {
     static int32_t frameCount;
@@ -1312,6 +1316,9 @@ void G_DisplayRest(int32_t smoothratio)
 #endif
 
     G_PrintFPS();
+#ifdef __ANDROID__
+    G_DrawAndroidFPS();
+#endif
 
     // JBF 20040124: display level stats in screen corner
     if (ud.overhead_on != 2 && ud.levelstats && VM_OnEvent(EVENT_DISPLAYLEVELSTATS, g_player[screenpeek].ps->i, screenpeek) == 0)

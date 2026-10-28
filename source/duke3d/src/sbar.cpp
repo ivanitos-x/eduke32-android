@@ -339,6 +339,15 @@ void G_DrawTXDigiNumZ(int32_t starttile, int32_t x, int32_t y, int32_t n, int32_
 
     G_ScreenText(starttile, x, y, z, 0, 0, b, s, pal, cs|2, 0, (4<<16), (8<<16), (1<<16), 0, TEXT_XCENTER|TEXT_DIGITALNUMBER, x1, y1, x2, y2);
 }
+#ifdef __ANDROID__
+void G_DrawAndroidFPS(void)
+{
+    // Slightly enlarge the half-scale HUD digits and give them a little more
+    // breathing room from the top and left edges.
+    G_DrawTXDigiNumZ(DIGITALNUM, 2<<16, 7<<16, g_frameRate, -16, 0,
+        ROTATESPRITE_FULL16, 0, 0, xdim-1, ydim-1, sbarsc(36045L));
+}
+#endif
 
 static void G_DrawAltDigiNum(int32_t x, int32_t y, int32_t n, char s, int32_t cs)
 {

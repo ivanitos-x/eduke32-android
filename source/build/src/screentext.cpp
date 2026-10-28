@@ -6,6 +6,17 @@
 
 #include "screentext.h"
 #include "build.h"
+#if defined(__ANDROID__) && defined(USE_OPENGL) && defined(POLYMER)
+#include "polymer.h"
+// Limit retained GL state to a string of glyphs. General menu code can mix
+// fixed-function drawing, fades and 3D views, so it must not share this scope.
+struct AndroidScreenTextBatch
+{
+    bool active = pr_textbatch && videoGetRenderMode() == REND_POLYMER;
+    AndroidScreenTextBatch() { if (active) polymost_begintextbatch(); }
+    ~AndroidScreenTextBatch() { if (active) polymost_endtextbatch(); }
+};
+#endif
 
 static inline void SetIfGreater(int32_t *variable, int32_t potentialValue)
 {
@@ -69,6 +80,9 @@ vec2_t screentextGetSize(ScreenTextSize_t const & data)
     glyph_t glyph;
     int constwidthactive = 0;
 
+#if defined(__ANDROID__) && defined(USE_OPENGL) && defined(POLYMER)
+    AndroidScreenTextBatch textBatch;
+#endif
     // loop through the string
     while (text < end && (glyph = *text))
     {
@@ -289,6 +303,9 @@ vec2_t screentextRender(ScreenText_t const & data)
             origin.y += -(size.y/2/data.zoom*data.zoom);
     }
 
+#if defined(__ANDROID__) && defined(USE_OPENGL) && defined(POLYMER)
+    AndroidScreenTextBatch textBatch;
+#endif
     // loop through the string
     while (text < end && (glyph = *text))
     {

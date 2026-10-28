@@ -162,6 +162,28 @@ static bool MV_Mix(VoiceNode * const voice, int const buffer)
             mixlen = (voclen - position + rate - voice->channels) / rate;
         }
 
+#ifdef __ANDROID__
+        // The mixers use a do/while loop and require a positive output length.
+        // Validate the full source span before mixing legacy WAV/VOC blocks.
+        bool invalid = mixlen <= 0 || mixlen > length || rate == 0 || voice->sound == nullptr;
+        if (!invalid && (voice->wavetype == FMT_WAV || voice->wavetype == FMT_VOC))
+        {
+            uintptr_t const raw = (uintptr_t)voice->rawdataptr;
+            uintptr_t const sound = (uintptr_t)voice->sound;
+            uint64_t const lastFrame = ((uint64_t)position + (uint64_t)(mixlen-1)*rate) >> 16;
+            uint64_t const bytes = (lastFrame+1)*((voice->channels*voice->bits) >> 3);
+            invalid = !raw || sound < raw || sound-raw > voice->rawdatasiz
+                || bytes > voice->rawdatasiz-(sound-raw);
+        }
+        if (invalid)
+        {
+            LOG_F(ERROR, "Invalid audio block: sound=%" PRIdPTR " format=%d bits=%d channels=%d pos=%u block=%u rate=%u frames=%d remaining=%d data=%u",
+                voice->callbackval, (int)voice->wavetype, voice->bits, voice->channels,
+                position, voclen, rate, mixlen, length, voice->rawdatasiz);
+            MV_GlobalVolume = gv;
+            return false;
+        }
+#endif
         voice->position = voice->mix(voice, mixlen);
         length -= mixlen;
 

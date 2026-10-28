@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:glEsVersion="0x00010001" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <application android:name="com.codex.eduke32.DiagnosticApp" android:allowBackup="false" android:enableOnBackInvokedCallback="true" android:icon="@mipmap/eduke32_icon" android:label="@string/eduke_name"
+        android:theme="@style/AppTheme" android:hardwareAccelerated="true">
+        <activity android:name="com.codex.eduke32.LauncherActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name="com.codex.eduke32.GameActivity" android:process=":game"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:exported="false" android:label="@string/eduke_name"
+            android:launchMode="singleInstance" android:screenOrientation="sensorLandscape"
+            android:preferMinimalPostProcessing="true" />
+        <activity android:name="com.codex.eduke32.ControlLayoutActivity"
+            android:exported="false" android:screenOrientation="sensorLandscape"
+            android:label="Arrange controls" />
+        <provider android:name="com.codex.eduke32.LogFileProvider"
+            android:authorities="com.codex.eduke32.logprovider"
+            android:exported="false" android:grantUriPermissions="true" />
+    </application>
+</manifest>

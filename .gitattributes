@@ -1,0 +1,9 @@
+/android/** text=auto
+/README.md text eol=lf
+/ANDROID_PORT.md text eol=lf
+/android/gradlew text eol=lf
+/android/*.bat text eol=crlf
+*.png binary
+*.bmp binary
+*.sf2 binary
+*.jar binary

@@ -8,6 +8,11 @@
 #include "hightile.h"
 
 extern int32_t rendmode;
+#if defined(__ANDROID__) && defined(POLYMER)
+bool polymost_prepareHudClientArrays(void);
+void polymost_begintextbatch(void);
+void polymost_endtextbatch(void);
+#endif
 extern float gtang;
 extern int polymost2d;
 extern double gxyaspect;
@@ -98,6 +103,8 @@ extern int32_t r_enablepolymost2;
 
 #ifdef USE_GLEXT
 extern int32_t r_vbocount;
+#endif
+#if defined(USE_GLEXT) || defined(POLYMER)
 extern int32_t r_glowmapping;
 extern int32_t r_detailmapping;
 #endif

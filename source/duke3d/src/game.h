@@ -327,6 +327,12 @@ extern void drawframe_do(void);
 
 static FORCE_INLINE int dukeMaybeDrawFrame(void)
 {
+#ifdef __ANDROID__
+    // Drawing inside G_MoveWorld can keep catch-up alive indefinitely when
+    // rendering is slower than simulation. Draw between complete mobile ticks.
+    if (!g_netClient && !g_netServer && ud.multimode < 2 && ud.recstat == 0)
+        return 0;
+#endif
     // g_frameJustDrawn is set by G_DrawFrame() (and thus by the coroutine)
     // it isn't cleared until the next game tic is processed.
     auto ticks = timerGetNanoTicks();

@@ -288,6 +288,10 @@ end_of_data:
         if (voice->channels == 2)
             blocklength /= 2;
 
+        // Empty VOC placeholders contain no PCM frames to mix.
+        if (blocklength == 0)
+            return NoMoreData;
+
         voice->position     = 0;
         voice->length       = min<uint32_t>(blocklength, 0x8000u);
         voice->BlockLength  = blocklength - voice->length;

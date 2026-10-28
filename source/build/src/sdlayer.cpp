@@ -27,6 +27,9 @@
 # include "glad/glad.h"
 # include "glbuild.h"
 # include "glsurface.h"
+# if defined(__ANDROID__) && defined(EDUKE32_GLES)
+#  include "gl4esinit.h"
+# endif
 #endif
 
 #if defined HAVE_GTK2
@@ -91,6 +94,17 @@ static int sdl_minimized;
 static SDL_Window *sdl_window;
 static SDL_GLContext sdl_context;
 static int vsync_unsupported;
+#endif
+#if defined(__ANDROID__) && defined(USE_OPENGL) && defined(EDUKE32_GLES)
+static int android_gl4es_initialized;
+static void *android_gl4es_getproc(const char *name) { return SDL_GL_GetProcAddress(name); }
+static void android_gl4es_getmainfbsize(int *width, int *height)
+{
+    if (sdl_window)
+        SDL_GL_GetDrawableSize(sdl_window, width, height);
+    else
+        *width = *height = 0;
+}
 #endif
 
 static int32_t vsync_renderlayer;
@@ -365,11 +379,13 @@ static void sighandler(int signum)
 
 #ifdef __ANDROID__
 int mobile_halted = 0;
+static int mobile_video_reset_pending = 0;
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 void G_Shutdown(void);
+void AndroidPauseGame(int paused);
 #ifdef __cplusplus
 }
 #endif
@@ -386,13 +402,19 @@ int sdlayer_mobilefilter(void *userdata, SDL_Event *event)
             mobile_halted = 1;
             return 0;
         case SDL_APP_LOWMEMORY:
+#ifdef USE_OPENGL
             gltexinvalidatetype(INVALIDATE_ALL);
+#endif
             return 0;
         case SDL_APP_WILLENTERBACKGROUND:
             mobile_halted = 1;
+            AndroidPauseGame(1);
+            LOG_F(INFO, "Android app entering background; game paused.");
             return 0;
         case SDL_APP_DIDENTERBACKGROUND:
+#ifdef USE_OPENGL
             gltexinvalidatetype(INVALIDATE_ALL);
+#endif
             // tear down video?
             return 0;
         case SDL_APP_WILLENTERFOREGROUND:
@@ -400,7 +422,15 @@ int sdlayer_mobilefilter(void *userdata, SDL_Event *event)
             return 0;
         case SDL_APP_DIDENTERFOREGROUND:
             mobile_halted = 0;
+            sdl_minimized = 0;
+            AndroidPauseGame(!appactive);
+            mobile_video_reset_pending = 1;
+            LOG_F(INFO, "Android app resumed; waiting for renderer refresh.");
             return 0;
+        case SDL_RENDER_DEVICE_RESET:
+            mobile_video_reset_pending = 1;
+            LOG_F(WARNING, "Android OpenGL context was recreated; rebuilding renderer resources.");
+            return 1;
         default:
             return 1;//!halt;
     }
@@ -486,7 +516,7 @@ int main(int argc, char *argv[])
     signal(SIGFPE, sighandler);
 #endif
 
-    engineSetupLogging(argc, argv);
+    engineSetupLogging(argc, const_cast<char **>(argv));
 
 #if SDL_VERSION_ATLEAST(2, 0, 8)
     if (EDUKE32_SDL_LINKED_PREREQ(linked, 2, 0, 8))
@@ -1164,7 +1194,7 @@ const char *joyGetName(int32_t what, int32_t num)
     switch (what)
     {
         case 0:  // axis
-            if ((unsigned)num > (unsigned)joystick.numAxes)
+            if ((unsigned)num >= (unsigned)joystick.numAxes)
                 return NULL;
 
 #if SDL_MAJOR_VERSION >= 2
@@ -1189,7 +1219,7 @@ const char *joyGetName(int32_t what, int32_t num)
             return (char *)tmp;
 
         case 1:  // button
-            if ((unsigned)num > (unsigned)joystick.numButtons)
+            if ((unsigned)num >= (unsigned)joystick.numButtons)
                 return NULL;
 
 #if SDL_MAJOR_VERSION >= 2
@@ -1229,7 +1259,7 @@ const char *joyGetName(int32_t what, int32_t num)
             return (char *)tmp;
 
         case 2:  // hat
-            if ((unsigned)num > (unsigned)joystick.numHats)
+            if ((unsigned)num >= (unsigned)joystick.numHats)
                 return NULL;
             Bsprintf(tmp, "Hat %d", num);
             return (char *)tmp;
@@ -1243,9 +1273,14 @@ const char *joyGetName(int32_t what, int32_t num)
 //
 // initmouse() -- init mouse input
 //
-void mouseInit(void)
-{
+void mouseInit(void) {
+#ifdef __ANDROID__
+    g_mouseLockedToWindow = false;
+    g_mouseEnabled = false;
+    mouseGrabInput(0);
+#else
     mouseGrabInput(g_mouseEnabled = g_mouseLockedToWindow);  // FIXME - SA
+#endif
 }
 
 //
@@ -1532,7 +1567,13 @@ static void destroy_window_resources()
     }
 
     if (sdl_context)
+    {
+#if defined(__ANDROID__) && defined(USE_OPENGL) && defined(EDUKE32_GLES)
+        // GL4ES is process-global and does not support tearing down/recreating its state
+        // for every SDL surface replacement. Keep it alive across SDL context resets.
+#endif
         SDL_GL_DeleteContext(sdl_context);
+    }
     sdl_context = NULL;
     if (sdl_window)
         SDL_DestroyWindow(sdl_window);
@@ -1604,11 +1645,29 @@ void sdlayer_setvideomode_opengl(void)
 {
     glsurface_destroy();
 
+#ifndef EDUKE32_GLES
     glShadeModel(GL_SMOOTH);  // GL_FLAT
+#endif
     glClearColor(0, 0, 0, 1.0);  // Black Background
+#ifndef EDUKE32_GLES
     glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);  // Use FASTEST for ortho!
+#endif
 //    glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
-    glViewport(0,0,xres,yres);
+    int32_t viewportWidth = xres;
+    int32_t viewportHeight = yres;
+#ifdef __ANDROID__
+    if (sdl_window)
+    {
+        int32_t windowWidth = 0, windowHeight = 0;
+        SDL_GetWindowSize(sdl_window, &windowWidth, &windowHeight);
+        SDL_GL_GetDrawableSize(sdl_window, &viewportWidth, &viewportHeight);
+        if (viewportWidth <= 0) viewportWidth = xres;
+        if (viewportHeight <= 0) viewportHeight = yres;
+        LOG_F(INFO, "Android GL viewport: window=%dx%d drawable=%dx%d mode=%dx%d.",
+              windowWidth, windowHeight, viewportWidth, viewportHeight, xres, yres);
+    }
+#endif
+    glViewport(0, 0, viewportWidth, viewportHeight);
 
 #ifndef EDUKE32_GLES
     glDisable(GL_DITHER);
@@ -1790,7 +1849,34 @@ int setvideomode_sdlcommonpost(int32_t x, int32_t y, int32_t c, int32_t fs, int3
         }
     }
 
+#ifdef __ANDROID__
+    if(c == 8
+#ifdef USE_OPENGL
+       && nogl
+#endif
+    )
+    {
+    // Android replaces the native window surface when its SurfaceView is
+    // recreated (for example after resuming from the background).  The old
+    // SDL_Surface pointer and its pixel format can then describe the previous
+    // surface, producing corrupted colors when the indexed framebuffer is
+    // converted to RGB.  Always reacquire it after changing the window mode.
+    sdl_surface = SDL_GetWindowSurface(sdl_window);
+    if (!sdl_surface)
+    {
+        LOG_F(ERROR, "Unable to reacquire Android window surface: %s.", SDL_GetError());
+        return -1;
+    }
+    LOG_F(INFO, "Android window surface refreshed: %dx%d, %d-bpp, pitch %d.",
+          sdl_surface->w, sdl_surface->h, sdl_surface->format->BitsPerPixel, sdl_surface->pitch);
+    }
+#endif
+
+#ifndef __ANDROID__
+    // On Android, changing immersive system UI can resize the SurfaceView
+    // asynchronously. Keep its resize event so the engine can match the surface.
     SDL_FlushEvent(SDL_WINDOWEVENT);
+#endif
 #endif
 
     videoFadePalette(palfadergb.r, palfadergb.g, palfadergb.b, palfadedelta);
@@ -1849,12 +1935,14 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
             int32_t value;
         } sdlayer_gl_attributes[] =
         {
+#ifndef __ANDROID__
               { SDL_GL_CONTEXT_FLAGS,
 #ifndef NDEBUG
               SDL_GL_CONTEXT_DEBUG_FLAG |
 #endif
               SDL_GL_CONTEXT_ROBUST_ACCESS_FLAG },
               { SDL_GL_CONTEXT_RESET_NOTIFICATION, SDL_GL_CONTEXT_RESET_LOSE_CONTEXT },
+#endif
               { SDL_GL_DOUBLEBUFFER, 1 },
 
               { SDL_GL_STENCIL_SIZE, 1 },
@@ -1881,10 +1969,19 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
             nogl = 1;
         }
 
-#ifndef EDUKE32_GLES
-        gladLoadGLLoader(SDL_GL_GetProcAddress);
-#else
+#if defined(__ANDROID__) && defined(EDUKE32_GLES)
+        set_getprocaddress(android_gl4es_getproc);
+        set_getmainfbsize(android_gl4es_getmainfbsize);
+        if (!android_gl4es_initialized)
+        {
+            initialize_gl4es();
+            android_gl4es_initialized = 1;
+        }
+        gladLoadGLLoader(gl4es_GetProcAddress);
+#elif defined(EDUKE32_GLES)
         gladLoadGLES2Loader(SDL_GL_GetProcAddress);
+#else
+        gladLoadGLLoader(SDL_GL_GetProcAddress);
 #endif
         if (GLVersion.major < 2)
         {
@@ -2042,21 +2139,62 @@ void videoEndDrawing(void)
 //
 // showframe() -- update the display
 //
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(EDUKE32_TOUCH_DEVICES)
 extern "C" void AndroidDrawControls();
 #endif
 
+#ifdef __ANDROID__
+extern "C" void AndroidPublishTouchMode(void);
+#endif
 void videoShowFrame(int32_t w)
 {
     UNREFERENCED_PARAMETER(w);
 
+#ifdef __ANDROID__
+    AndroidPublishTouchMode();
+    if (mobile_halted || !appactive) return;
+    if (bpp == 8
+#ifdef USE_OPENGL
+        && nogl
+#endif
+        && sdl_window)
+    {
+        SDL_Surface *current = SDL_GetWindowSurface(sdl_window);
+        if(!current || current->w < current->h) {
+            // System overlays can briefly hand SDL a portrait/replaced surface.
+            // Wait for landscape instead of writing a landscape stride into it.
+            mobile_video_reset_pending = 1;
+            return;
+        }
+        vec2_t const destination = softsurface_getDestinationBufferResolution();
+        if(current != sdl_surface || current->w != destination.x || current->h != destination.y)
+            mobile_video_reset_pending = 1;
+        sdl_surface = current;
+    }
+    if (mobile_video_reset_pending)
+    {
+        mobile_video_reset_pending = 0;
+        // Rebuild the software renderer after Android replaces its native surface,
+        // while preserving the active FOV and aspect settings across the mode reset.
+        int32_t const savedViewingRange = viewingrange;
+        int32_t const savedYxAspect = yxaspect;
+        videomodereset = 1;
+        int32_t const requestedWidth = bpp == 8 ? xdim*upscalefactor : xres;
+        int32_t const requestedHeight = bpp == 8 ? ydim*upscalefactor : yres;
+        if (videoSetGameMode(fullscreen, requestedWidth, requestedHeight, bpp, upscalefactor) < 0)
+            LOG_F(ERROR, "Failed to restore Android video mode after resume.");
+        else
+        {
+            renderSetAspect(savedViewingRange, savedYxAspect);
+            LOG_F(INFO, "Android video mode restored: %dx%d mode, %dx%d game buffer, %d-bpp; FOV preserved.", xres, yres, xdim, ydim, bpp);
+        }
+        LOG_F(INFO, "Android renderer resources refreshed after resume.");
+    }
+#endif
+
     // if we're minimized or about to resize, just throw away the frame
     if (sdl_resize.x || sdl_minimized)
         return;
-
-#ifdef __ANDROID__
-    if (mobile_halted) return;
-#endif
 
 #ifdef USE_OPENGL
     if (!nogl)
@@ -2066,7 +2204,7 @@ void videoShowFrame(int32_t w)
             if (palfadedelta)
                 fullscreen_tint_gl(palfadergb.r, palfadergb.g, palfadergb.b, palfadedelta);
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(EDUKE32_TOUCH_DEVICES)
             AndroidDrawControls();
 #endif
         }
@@ -2180,6 +2318,13 @@ void videoShowFrame(int32_t w)
         while (lockcount) videoEndDrawing();
     }
 
+#ifdef __ANDROID__
+    vec2_t const destination = softsurface_getDestinationBufferResolution();
+    if(!sdl_surface || !sdl_surface->format || sdl_surface->w != destination.x || sdl_surface->h != destination.y) {
+        mobile_video_reset_pending=1;
+        return;
+    }
+#endif
     if (SDL_MUSTLOCK(sdl_surface)) SDL_LockSurface(sdl_surface);
     softsurface_blitBuffer((uint32_t*) sdl_surface->pixels, sdl_surface->format->BitsPerPixel);
     if (SDL_MUSTLOCK(sdl_surface)) SDL_UnlockSurface(sdl_surface);
@@ -2324,6 +2469,10 @@ int32_t handleevents_peekkeys(void)
 #endif
 }
 
+#ifdef __ANDROID__
+vec2_t g_androidMouseDownAbs;
+#endif
+
 void handleevents_updatemousestate(uint8_t state)
 {
     g_mouseClickState = state == SDL_RELEASED ? MOUSE_RELEASED : MOUSE_PRESSED;
@@ -2372,6 +2521,11 @@ int32_t handleevents_sdlcommon(SDL_Event *ev)
             int32_t j;
 
             // some of these get reordered to match winlayer
+#ifdef __ANDROID__
+            g_mouseAbs = { ev->button.x, ev->button.y };
+            if (ev->button.button == SDL_BUTTON_LEFT && ev->button.state == SDL_PRESSED)
+                g_androidMouseDownAbs = g_mouseAbs;
+#endif
             switch (ev->button.button)
             {
                 default: j = -1; break;
@@ -2741,10 +2895,18 @@ int32_t handleevents_pollsdl(void)
                     case SDL_WINDOWEVENT_RESTORED:
                     case SDL_WINDOWEVENT_MAXIMIZED:
                         sdl_minimized = false;
+#ifdef __ANDROID__
+                        mobile_halted = 0;
+                        mobile_video_reset_pending = 1;
+#endif
                         break;
                     case SDL_WINDOWEVENT_FOCUS_GAINED:
                     case SDL_WINDOWEVENT_FOCUS_LOST:
                         appactive = (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED);
+#ifdef __ANDROID__
+                        AndroidPauseGame(!appactive || mobile_halted);
+                        LOG_F(INFO,"Android window focus=%d; background=%d",appactive,mobile_halted);
+#endif
                         if (g_mouseGrabbed && g_mouseEnabled)
                             grabmouse_low(appactive);
 #ifdef _WIN32
@@ -2769,7 +2931,33 @@ int32_t handleevents_pollsdl(void)
                         break;
                     }
                     case SDL_WINDOWEVENT_RESIZED:
+#ifndef __ANDROID__
                         if (fullscreen) break;
+#else
+                        LOG_F(INFO, "Android surface resized to %dx%d (fullscreen=%d).", ev.window.data1, ev.window.data2, fullscreen);
+                        if(ev.window.data1<=0 || ev.window.data2<=0 || ev.window.data1<ev.window.data2 || !appactive || mobile_halted) {
+                            mobile_video_reset_pending=1;
+                            LOG_F(INFO,"Deferring transient/background surface resize");
+                            break;
+                        }
+                        if(bpp==8)mobile_video_reset_pending=1;
+                        if (fullscreen)
+                        {
+#ifdef USE_OPENGL
+                            if(bpp>8 && !nogl) {
+                            int32_t drawableWidth = 0, drawableHeight = 0;
+                            if (sdl_window)
+                                SDL_GL_GetDrawableSize(sdl_window, &drawableWidth, &drawableHeight);
+                            if (drawableWidth > 0 && drawableHeight > 0)
+                            {
+                                glViewport(0, 0, drawableWidth, drawableHeight);
+                                LOG_F(INFO, "Android fullscreen drawable resized to %dx%d.", drawableWidth, drawableHeight);
+                            }
+                            }
+#endif
+                            break;
+                        }
+#endif
                         sdl_resize = { ev.window.data1 & ~1, ev.window.data2 & ~1 };
                         break;
                     case SDL_WINDOWEVENT_ENTER:
@@ -2792,10 +2980,6 @@ int32_t handleevents_pollsdl(void)
 
 int32_t handleevents(void)
 {
-#ifdef __ANDROID__
-    if (mobile_halted) return 0;
-#endif
-
     int32_t rv;
 
 #if SDL_VERSION_ATLEAST(2, 0, 9)
@@ -2867,8 +3051,16 @@ int32_t handleevents(void)
 
     if (!frameplace && sdl_resize.x)
     {
+#ifdef __ANDROID__
+        LOG_F(INFO, "Applying Android surface resize %dx%d.", sdl_resize.x, sdl_resize.y);
+#endif
         if (in3dmode())
+#ifdef __ANDROID__
+            videoSetGameMode(fullscreen, bpp == 8 ? xdim*upscalefactor : sdl_resize.x,
+                            bpp == 8 ? ydim*upscalefactor : sdl_resize.y, bpp, upscalefactor);
+#else
             videoSetGameMode(fullscreen, sdl_resize.x, sdl_resize.y, bpp, upscalefactor);
+#endif
         else
             videoSet2dMode(fullscreen, sdl_resize.x, sdl_resize.y, upscalefactor);
 

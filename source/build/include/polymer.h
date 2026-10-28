@@ -21,6 +21,20 @@ extern "C" {
 #define PR_LINEAR_FOG
 
 // CVARS
+#ifdef __ANDROID__
+extern int32_t pr_workers;
+extern int32_t pr_lightscissor;
+extern int32_t pr_adpf;
+extern int32_t pr_bigcores;
+extern int32_t pr_packedpalette;
+extern int32_t pr_fastlight;
+extern int32_t pr_lightstatecache;
+extern int32_t pr_textbatch;
+extern int32_t polymer_textbatch_depth;
+void polymer_begintextbatch(void);
+void polymer_endtextbatch(void);
+void polymer_precacheuitile(int32_t tile, int32_t pal);
+#endif
 extern int32_t      pr_lighting;
 extern int32_t      pr_normalmapping;
 extern int32_t      pr_specularmapping;
@@ -84,6 +98,8 @@ typedef enum {
                     PR_BIT_LIGHT_MAP,
                     PR_BIT_SPOT_LIGHT,
                     PR_BIT_POINT_LIGHT,
+                    PR_BIT_FAST_LIGHT_MATH,
+                    PR_BIT_PACKED_PALETTE,
                     PR_BIT_FOOTER,              // must be just before last
                     PR_BIT_COUNT                // must be last
 }                   prbittype;
@@ -100,6 +116,9 @@ typedef struct      s_prmaterial {
     GLuint          artmap;
     GLuint          basepalmap;
     GLuint          lookupmap;
+#ifdef __ANDROID__
+    GLuint packedlookupmap;
+#endif
     GLint           shadeoffset;
     GLfloat         visibility;
     // PR_BIT_DIFFUSE_MAP
@@ -127,6 +146,17 @@ typedef struct      s_prmaterial {
 typedef struct      s_prrograminfo {
     GLuint          handle;
     GLint           uniform_colorCorrection;
+#ifdef __ANDROID__
+    uint32_t        androidUniformCacheFlags;
+    GLfloat         androidColorCorrection[4];
+    GLfloat         androidDiffuseScale[2];
+    GLfloat         androidLookupScale[2];
+    GLfloat         androidShadeOffset;
+    GLfloat         androidVisibility;
+    GLfloat         androidDetailScale[2], androidSpecMaterial[2];
+    GLfloat         androidMirrorScale[2], androidNormalBias[2];
+    GLint           androidLinearFog;
+#endif
     // PR_BIT_ANIM_INTERPOLATION
     GLint           attrib_nextFrameData;
     GLint           attrib_nextFrameNormal;
@@ -142,6 +172,7 @@ typedef struct      s_prrograminfo {
     GLuint          uniform_artMap;
     GLuint          uniform_basePalMap;
     GLuint          uniform_lookupMap;
+    GLint           uniform_lookupScale;
     GLuint          uniform_shadeOffset;
     GLuint          uniform_visibility;
     // PR_BIT_DIFFUSE_MAP
@@ -158,6 +189,7 @@ typedef struct      s_prrograminfo {
     GLint           uniform_specMaterial;
     // PR_BIT_MIRROR_MAP
     GLint           uniform_mirrorMap;
+    GLint           uniform_mirrorScale;
 #ifdef PR_LINEAR_FOG
     // PR_BIT_FOG
     GLint           uniform_linearFog;

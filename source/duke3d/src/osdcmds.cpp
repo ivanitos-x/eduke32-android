@@ -38,6 +38,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include "vfs.h"
 
+#ifdef __ANDROID__
+#include "android_perf_views.h"
+#endif
+
 struct osdcmd_cheatsinfo osdcmd_cheatsinfo_stat;
 float r_ambientlight = 1.0, r_ambientlightrecip = 1.0;
 int32_t r_pr_defaultlights = 1;
@@ -1843,6 +1847,10 @@ int32_t registerosdcommands(void)
     OSD_RegisterFunction("restartsound","restartsound: reinitializes the sound system",osdcmd_restartsound);
     OSD_RegisterFunction("restartvid","restartvid: reinitializes the video mode",osdcmd_restartvid);
     OSD_RegisterFunction("addlogvar","addlogvar <gamevar>: prints the value of a gamevar", osdcmd_addlogvar);
+#ifdef __ANDROID__
+    OSD_RegisterFunction("perfmark","perfmark <name>: remember the current map, coordinates and camera",AndroidPerfViewCommand);
+    OSD_RegisterFunction("perfwarp","perfwarp <name>: restore a saved view in the current map",AndroidPerfViewCommand);
+#endif
     OSD_RegisterFunction("setvar","setvar <gamevar> <value>: sets the value of a gamevar", osdcmd_setvar);
     OSD_RegisterFunction("setvarvar","setvarvar <gamevar1> <gamevar2>: sets the value of <gamevar1> to <gamevar2>", osdcmd_setvar);
     OSD_RegisterFunction("setactorvar","setactorvar <actor#> <gamevar> <value>: sets the value of <actor#>'s <gamevar> to <value>", osdcmd_setactorvar);
