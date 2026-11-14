@@ -342,3 +342,10 @@ when the starting sector has an invalid wall range. An Android crash report
 identified an out-of-bounds wall read in this search during a BloodCM door
 interaction. Gradle debug build passed. Door regression test pending.
 APK SHA-256: f53a4f292c9f65ffb458ec6a682146b940ade8f6d2982948d98b48d2408caa9e.
+
+## 0.6.14 (code 60)
+
+Avoid calling an unavailable OpenGL fog function when a level configuration
+changes shading. A symbolized DNF 2013 level-transition crash identified this
+call. Gradle debug build passed. Device regression test pending.
+APK SHA-256: 907ba53d022865784efd6eb036323616f6163047624ffbd2927356bdf2228cc5.

@@ -10154,7 +10154,7 @@ static int osdcmd_cvar_set_polymost(osdcmdptr_t parm)
             gltexapplyprops();
         else if (!Bstrcasecmp(parm->name, "r_texfilter"))
             gltexturemode(parm);
-        else if (!Bstrcasecmp(parm->name, "r_usenewshading"))
+        else if (!Bstrcasecmp(parm->name, "r_usenewshading") && videoGetRenderMode() != REND_CLASSIC && glFogi)
             glFogi(GL_FOG_MODE, (r_usenewshading < 2) ? GL_EXP2 : GL_LINEAR);
 #ifdef POLYMER
         else if (!Bstrcasecmp(parm->name, "r_pr_maxlightpasses"))
