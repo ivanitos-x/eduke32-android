@@ -334,3 +334,11 @@ Preserve Android's native fatal signal handlers so the original fault context
 can reach the system crash reporter. Gradle debug build passed. The BloodCM
 Polymer crash remains to be reproduced and diagnosed.
 APK SHA-256: 573763f2a6b6ae1165db8af53594dc0cf40ee5e4dfa6c270d4e6a212ba481046.
+
+## 0.6.13 (code 59)
+
+Bounds-check the legacy sector search and fall back to scanning valid sectors
+when the starting sector has an invalid wall range. An Android crash report
+identified an out-of-bounds wall read in this search during a BloodCM door
+interaction. Gradle debug build passed. Door regression test pending.
+APK SHA-256: f53a4f292c9f65ffb458ec6a682146b940ade8f6d2982948d98b48d2408caa9e.

@@ -13485,6 +13485,14 @@ void updatesectorz_compat(int32_t const x, int32_t const y, int32_t const z, int
         int mcf = -1;
     restart:
 #endif
+        if ((unsigned)*sectnum >= (unsigned)numsectors)
+            goto search_remaining;
+
+        int const firstWall = sector[*sectnum].wallptr;
+        int const wallCount = sector[*sectnum].wallnum;
+        if (firstWall < 0 || wallCount <= 0 || firstWall + wallCount > numwalls)
+            goto search_remaining;
+
         // this block used to be outside the "if" and caused crashes in Polymost Mapster32
         int32_t cz, fz;
         getzsofslope(*sectnum, x, y, &cz, &fz);
@@ -13522,20 +13530,16 @@ void updatesectorz_compat(int32_t const x, int32_t const y, int32_t const z, int
             if (inside_p(x, y, *sectnum))
                 return;
 
-        uwalltype const* wal = (uwalltype*) &wall[sector[*sectnum].wallptr];
-        int wallsleft = sector[*sectnum].wallnum;
-        do
+        for (int wallIndex = firstWall; wallIndex < firstWall + wallCount; ++wallIndex)
         {
             // YAX: TODO: check neighboring sectors here too?
-            int const next = wal->nextsector;
-            if (next>=0 && inside_z_p(x, y, z, next))
+            int const next = wall[wallIndex].nextsector;
+            if ((unsigned)next < (unsigned)numsectors && inside_z_p(x, y, z, next))
                 SET_AND_RETURN(*sectnum, next);
-
-            wal++;
         }
-        while (--wallsleft);
     }
 
+search_remaining:
     // we need to support passing in a sectnum of -1, unfortunately
     for (int i = numsectors - 1; i >= 0; --i)
         if (inside_z_p(x, y, z, i))
