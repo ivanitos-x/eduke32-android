@@ -238,6 +238,12 @@ Java_com_codex_eduke32_GameActivity_nativeMapPan(JNIEnv *, jclass, jfloat dx, jf
     AndroidMapPan(dx, dy);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_codex_eduke32_GameActivity_nativeMapRotate(JNIEnv *, jclass, jfloat radians)
+{
+    AndroidMapRotate(radians);
+}
+
 static std::string AndroidFindChild(std::string const &directory, char const *name)
 {
     if (directory.empty()) return {};

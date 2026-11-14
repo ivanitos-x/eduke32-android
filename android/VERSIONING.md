@@ -319,3 +319,11 @@ The Android map button opens the textured automap and closes it on the next
 tap. Drag with one finger to pan and pinch with two fingers to zoom.
 Gradle debug build passed. On-device gesture and rendering checks are pending.
 APK SHA-256: bc7fe4dd1b970e62f460172eac3e5dc85afa2eae23db45c812140cc5b9a98d04.
+
+## 0.6.11 (code 57)
+
+Twist two fingers to rotate the automap. The touch layout editor starts
+with a full-screen preview and a collapsible toolbar.
+Gradle debug build passed. Device validation is pending. A native crash
+reported in 0.6.10 has no stack trace in the available logs and remains open.
+APK SHA-256: df83ff5006588d2ea7feb047e241c4725ae1a85ca6d0a288ab93d89b19e9260c.

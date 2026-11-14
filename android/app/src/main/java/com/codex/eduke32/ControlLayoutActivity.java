@@ -4,11 +4,13 @@ import android.app.Activity;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.content.Context;
@@ -37,8 +39,7 @@ public final class ControlLayoutActivity extends Activity {
         loadPositions();
         custom.addAll(CustomTouchButtons.load(this));
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+        FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(22, 25, 32));
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
@@ -76,7 +77,6 @@ public final class ControlLayoutActivity extends Activity {
         done.setText("Done");
         done.setOnClickListener(v -> finish());
         toolbar.addView(done);
-        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(56)));
 
         sizeSlider=new android.widget.SeekBar(this);
         sizeSlider.setMax(85); sizeSlider.setProgress(35); sizeSlider.setEnabled(false);
@@ -100,7 +100,32 @@ public final class ControlLayoutActivity extends Activity {
         });
         toolbar.addView(sizeSlider,new LinearLayout.LayoutParams(dp(150),-2));
         preview = new Preview(this);
-        root.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+
+        toolbar.setBackgroundColor(Color.rgb(27, 35, 46));
+        toolbar.setClickable(true);
+        toolbar.setVisibility(View.GONE);
+        FrameLayout.LayoutParams panel = new FrameLayout.LayoutParams(-1, dp(56), Gravity.TOP);
+        panel.topMargin = dp(44);
+        root.addView(toolbar, panel);
+
+        TextView toggle = new TextView(this);
+        toggle.setText("▾");
+        toggle.setTextSize(22);
+        toggle.setTextColor(Color.WHITE);
+        toggle.setGravity(Gravity.CENTER);
+        toggle.setContentDescription("Show editor tools");
+        GradientDrawable toggleBackground = new GradientDrawable();
+        toggleBackground.setColor(Color.rgb(27, 35, 46));
+        toggleBackground.setCornerRadius(dp(10));
+        toggle.setBackground(toggleBackground);
+        toggle.setOnClickListener(v -> {
+            boolean show = toolbar.getVisibility() != View.VISIBLE;
+            toolbar.setVisibility(show ? View.VISIBLE : View.GONE);
+            toggle.setText(show ? "▴" : "▾");
+            toggle.setContentDescription(show ? "Hide editor tools" : "Show editor tools");
+        });
+        root.addView(toggle, new FrameLayout.LayoutParams(dp(48), dp(44), Gravity.TOP | Gravity.CENTER_HORIZONTAL));
         setContentView(root);
     }
 

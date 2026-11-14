@@ -77,6 +77,7 @@ static std::atomic<double> lookYawJoystickTarget { 0.0 }, lookPitchJoystickTarge
 static std::atomic<double> androidPendingYaw { 0.0 }, androidPendingPitch { 0.0 };
 static std::atomic<double> androidPendingMapZoom { 0.0 };
 static std::atomic<double> androidPendingMapX { 0.0 }, androidPendingMapY { 0.0 };
+static std::atomic<double> androidPendingMapRotation { 0.0 };
 static std::atomic<bool> androidLookResetPending { false };
 static std::atomic<uint32_t> androidMoveAxes { 0 };
 
@@ -137,19 +138,29 @@ void AndroidMapPan(float dx, float dy)
     AndroidAccumulateLook(androidPendingMapY, dy);
 }
 
-void AndroidApplyMapPan(int32_t *x, int32_t *y, int32_t angle, uint16_t zoom)
+void AndroidMapRotate(float radians)
+{
+    AndroidAccumulateLook(androidPendingMapRotation, radians);
+}
+
+void AndroidApplyMapNavigation(int32_t *x, int32_t *y, int32_t *angle, uint16_t zoom)
 {
     double const dx = androidPendingMapX.exchange(0.0, std::memory_order_relaxed);
     double const dy = androidPendingMapY.exchange(0.0, std::memory_order_relaxed);
-    if ((dx == 0.0 && dy == 0.0) || !ud.scrollmode || zoom == 0)
+    double const radians = androidPendingMapRotation.exchange(0.0, std::memory_order_relaxed);
+    if (!ud.scrollmode || zoom == 0)
+        return;
+    constexpr double angleUnitsPerRadian = 2048.0 / (2.0 * 3.141592653589793);
+    *angle = ((*angle & 2047) - int(lrint(radians * angleUnitsPerRadian))) & 2047;
+    if (dx == 0.0 && dy == 0.0)
         return;
 
     // Invert renderDrawMapView's screen transform so the map follows the finger.
     double const unitsPerPixel = 16384.0 / zoom;
     double const screenX = dx * xdim;
     double const screenY = dy * ydim;
-    double const cosAngle = sintable[(-angle) & 2047] / 16384.0;
-    double const sinAngle = sintable[(1536 - angle) & 2047] / 16384.0;
+    double const cosAngle = sintable[(-*angle) & 2047] / 16384.0;
+    double const sinAngle = sintable[(1536 - *angle) & 2047] / 16384.0;
     auto const panX = llround((screenX * cosAngle + screenY * sinAngle) * unitsPerPixel);
     auto const panY = llround((screenY * cosAngle - screenX * sinAngle) * unitsPerPixel);
     *x = clamp<int64_t>(int64_t(*x) - panX, INT32_MIN, INT32_MAX);
@@ -173,6 +184,7 @@ void AndroidResetButtons(void)
     androidPendingMapZoom.store(0.0, std::memory_order_relaxed);
     androidPendingMapX.store(0.0, std::memory_order_relaxed);
     androidPendingMapY.store(0.0, std::memory_order_relaxed);
+    androidPendingMapRotation.store(0.0, std::memory_order_relaxed);
     androidLookResetPending.store(true, std::memory_order_relaxed);
 }
 

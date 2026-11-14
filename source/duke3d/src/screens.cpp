@@ -1089,7 +1089,7 @@ void G_DisplayRest(int32_t smoothratio)
         {
 #ifdef __ANDROID__
             AndroidApplyMapZoom(&pp->zoom);
-            AndroidApplyMapPan(&ud.folx, &ud.foly, ud.fola, pp->zoom);
+            AndroidApplyMapNavigation(&ud.folx, &ud.foly, &ud.fola, pp->zoom);
 #endif
             // smoothratio = min(max(smoothratio,0),65536);
             smoothratio = calc_smoothratio(totalclock, ototalclock);

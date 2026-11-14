@@ -51,6 +51,7 @@ public final class GameActivity extends SDLActivity {
     private static native void nativeCustomAction(int action, boolean down);
     private static native void nativeMapZoom(float scale);
     private static native void nativeMapPan(float dx, float dy);
+    private static native void nativeMapRotate(float radians);
     private boolean blankTapActive;
     private boolean volumeFireEnabled, volumeFireHeld, touchFireHeld, volumeKeyCaptured;
     private void setFireSource(boolean physical, boolean down) {
@@ -473,6 +474,7 @@ public final class GameActivity extends SDLActivity {
         }
         private void cancelPointers() {
             mapPanPointer = -1;
+            mapRotationActive = false;
             keyPointers.clear();
             for(int i=0;i<pointers.size();i++) {
                 int role=pointers.valueAt(i).role; if(role>=0) { if(role==ACTION_FIRE) activity.setFireSource(false,false); else nativeAction(role,false); }
@@ -558,10 +560,27 @@ public final class GameActivity extends SDLActivity {
         }
         private int mapPanPointer = -1;
         private float mapPanX, mapPanY;
+        private boolean mapRotationActive;
+        private double mapPreviousAngle;
+
+        private void handleMapRotation(MotionEvent event) {
+            if (event.getPointerCount() != 2
+                    || event.getActionMasked() == MotionEvent.ACTION_POINTER_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                mapRotationActive = false;
+                return;
+            }
+            double angle = Math.atan2(event.getY(1) - event.getY(0), event.getX(1) - event.getX(0));
+            if (mapRotationActive && event.getActionMasked() == MotionEvent.ACTION_MOVE)
+                nativeMapRotate((float) Math.IEEEremainder(angle - mapPreviousAngle, 2 * Math.PI));
+            mapPreviousAngle = angle;
+            mapRotationActive = true;
+        }
 
         private void handleMapTouch(MotionEvent event) {
             int action = event.getActionMasked();
             mapScale.onTouchEvent(event);
+            handleMapRotation(event);
             if (event.getPointerCount() > 1 || action == MotionEvent.ACTION_CANCEL) {
                 mapPanPointer = -1;
                 if (keyPointers.size() != 0) {
