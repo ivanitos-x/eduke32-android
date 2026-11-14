@@ -1,5 +1,9 @@
 # Android app versions
 
+For each APK distributed for installation, copy the exact build to
+`releases/EDuke32-Android.apk` at the repository root. Record its SHA-256
+and commit the APK together with the source and version notes.
+
 ## 0.5.1 (code 45)
 
 - AMC Android Polymost uses its existing RGBA ART path. A live console comparison

@@ -110,6 +110,7 @@ project.xcworkspace/
 /android/**/.gradle/
 /android/**/local.properties
 *.apk
+!/releases/EDuke32-Android.apk
 *.aab
 *.jks
 *.keystore
