@@ -4,37 +4,46 @@ An unofficial Android port of [EDuke32](https://www.eduke32.com/), based on the
 [upstream source](https://voidpoint.io/terminx/eduke32). This repository keeps the
 upstream history and adds the Android launcher, touch controls and renderer integration.
 
-**Work in progress.** Current development version: **0.4.12**. Tested primarily on
-one Xiaomi/POCO device; compatibility with every phone is not established.
+**Work in progress.** Current development build **0.6.15 (61)**.
+Testing has focused on one Xiaomi/POCO device.
+
+[Download the Android APK](releases/EDuke32-Android.apk)
 
 ## Features
 
-- Classic software renderer with screen-aspect correction.
-- Experimental Polymer renderer through GL4ES and OpenGL ES.
-- Floating movement/look sticks, adjustable controls and optional Volume+ firing.
-- Duke game-folder selection and a BloodCM preset with engine-side legacy compatibility.
+- Classic 8-bit software rendering, Polymost in 16-bit or 32-bit color, and
+  experimental Polymer in 32-bit color with dynamic lighting.
+- Floating movement and look sticks, adjustable button layouts, custom bindings
+  and optional Volume+ firing.
+- Textured automap with one-finger panning and two-finger zoom and rotation.
+- Duke Nukem 3D and BloodCM presets, plus custom presets for game folders and
+  PC launch scripts.
 - MIDI playback using TinySoundFont and GeneralUser GS SoftSynth v1.44.
-- Emergency launch with a separate configuration, Classic rendering and audio disabled.
-- Shareable diagnostics: engine log, Java errors, accessible Android logcat and process-exit information.
-- Save/settings snapshots in a user-selected folder (restore verification is still pending).
+- Shareable engine logs, Java errors, available Android logs and process-exit information.
 
 ## Playing
 
 Requires an **ARM64 Android device, Android 7.0 / API 24 or newer**. The current APK
 contains `arm64-v8a` native libraries only. Polymer support depends on the GPU/driver.
 
-Supply your own legally obtained Duke Nukem 3D game data. No Duke GRP files,
-BloodCM/AMC game distributions, saves or personal settings are included.
+Supply your own legally obtained game data. The APK contains the port and its
+runtime dependencies.
 
 1. Install the APK as an update when possible; uninstalling deletes app-private data.
-2. Select a GRP or a game folder in the launcher. BloodCM requires its own supplied files.
-3. Start with Classic. Enable Polymer separately to try the experimental renderer.
-4. Select **Saves & settings folder** to enable persistent snapshots before reinstalling.
-   The app stores three completed ZIP generations in an `eduke32-android-*` subfolder.
-   Select that folder again after reinstalling to restore. Verify a backup exists first.
+2. Choose a preset and select the game's directory under **Game folder & mods**.
+   Grant file access when Android prompts. BloodCM requires `BloodCM.grp` and
+   the `blcons` directory.
+3. If **PC launch script** appears, select the script you want to use. See
+   [supported script syntax](android/PC_LAUNCH.md).
+4. Select a renderer and tap **Launch**. In game, open **Options → Touch Setup →
+   Arrange controls** to move or resize buttons and change custom bindings.
 
-If launch fails, try **Emergency launch**, reopen the launcher and use **Send log**.
-Review the report before sharing: it contains device information, paths and app logs.
+With a direct working folder, the engine loads resources on demand and writes
+saves and settings to that folder using its usual PC paths.
+
+If launch fails or the game crashes, reopen the launcher and use **Send log**.
+Review the report before sharing because it contains device information, paths
+and app logs.
 
 ## Building
 
@@ -77,9 +86,8 @@ notes are in [android/VERSIONING.md](android/VERSIONING.md).
 ## Known limitations
 
 - Polymer is experimental; performance, lighting and lifecycle recovery need more device testing.
-- Power-menu / assistant / screenshot focus handling in 0.4.12 awaits end-to-end confirmation.
 - Persistent save-folder restore needs a verified reinstall/restore round trip.
-- AMC TC support is not provided. BloodCM gameplay fixes need broader testing.
+- BloodCM gameplay fixes need broader testing.
 - Native crash traces depend on what Android makes available; the report cannot capture every failure.
 
 ## Credits and licenses
