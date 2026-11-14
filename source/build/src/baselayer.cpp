@@ -243,6 +243,14 @@ void engineSetupLogging(int &argc, char **argv)
     loguru::Options initopts;
     initopts.verbosity_flag = nullptr;
     initopts.signal_options.unsafe_signal_handler = false;
+#ifdef __ANDROID__
+    // Preserve Android's fatal signal handlers and the original fault context.
+    initopts.signal_options.sigsegv = false;
+    initopts.signal_options.sigbus = false;
+    initopts.signal_options.sigabrt = false;
+    initopts.signal_options.sigfpe = false;
+    initopts.signal_options.sigill = false;
+#endif
     loguru::init(argc, argv, initopts);
 }
 

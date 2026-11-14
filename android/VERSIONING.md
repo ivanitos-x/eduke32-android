@@ -327,3 +327,10 @@ with a full-screen preview and a collapsible toolbar.
 Gradle debug build passed. Device validation is pending. A native crash
 reported in 0.6.10 has no stack trace in the available logs and remains open.
 APK SHA-256: df83ff5006588d2ea7feb047e241c4725ae1a85ca6d0a288ab93d89b19e9260c.
+
+## 0.6.12 (code 58)
+
+Preserve Android's native fatal signal handlers so the original fault context
+can reach the system crash reporter. Gradle debug build passed. The BloodCM
+Polymer crash remains to be reproduced and diagnosed.
+APK SHA-256: 573763f2a6b6ae1165db8af53594dc0cf40ee5e4dfa6c270d4e6a212ba481046.
