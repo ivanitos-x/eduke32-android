@@ -50,6 +50,7 @@ public final class GameActivity extends SDLActivity {
     private static native int nativeTouchMode();
     private static native void nativeCustomAction(int action, boolean down);
     private static native void nativeMapZoom(float scale);
+    private static native void nativeMapPan(float dx, float dy);
     private boolean blankTapActive;
     private boolean volumeFireEnabled, volumeFireHeld, touchFireHeld, volumeKeyCaptured;
     private void setFireSource(boolean physical, boolean down) {
@@ -471,6 +472,7 @@ public final class GameActivity extends SDLActivity {
             invalidate();
         }
         private void cancelPointers() {
+            mapPanPointer = -1;
             keyPointers.clear();
             for(int i=0;i<pointers.size();i++) {
                 int role=pointers.valueAt(i).role; if(role>=0) { if(role==ACTION_FIRE) activity.setFireSource(false,false); else nativeAction(role,false); }
@@ -554,6 +556,33 @@ public final class GameActivity extends SDLActivity {
                         button.y * getHeight(), customRadius(button), held(CUSTOM_BASE + i));
             }
         }
+        private int mapPanPointer = -1;
+        private float mapPanX, mapPanY;
+
+        private void handleMapTouch(MotionEvent event) {
+            int action = event.getActionMasked();
+            mapScale.onTouchEvent(event);
+            if (event.getPointerCount() > 1 || action == MotionEvent.ACTION_CANCEL) {
+                mapPanPointer = -1;
+                if (keyPointers.size() != 0) {
+                    keyPointers.clear();
+                    invalidate();
+                }
+                return;
+            }
+            if (handleKeys(event) || action == MotionEvent.ACTION_UP) {
+                mapPanPointer = -1;
+                return;
+            }
+            int pointer = event.getPointerId(0);
+            float x = event.getX(), y = event.getY();
+            if (action == MotionEvent.ACTION_MOVE && mapPanPointer == pointer && !mapScale.isInProgress())
+                nativeMapPan((x - mapPanX) / getWidth(), (y - mapPanY) / getHeight());
+            mapPanPointer = pointer;
+            mapPanX = x;
+            mapPanY = y;
+        }
+
         @Override public boolean onTouchEvent(MotionEvent event) {
             updateInputMode();
             if (event.getActionMasked() == MotionEvent.ACTION_CANCEL && gameInputMode) {
@@ -562,15 +591,7 @@ public final class GameActivity extends SDLActivity {
             }
             if (event.getPointerCount() == 0) return false;
             if (inputMode == TOUCH_AUTOMAP) {
-                mapScale.onTouchEvent(event);
-                if (event.getPointerCount() > 1 || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                    if (keyPointers.size() != 0) {
-                        keyPointers.clear();
-                        invalidate();
-                    }
-                } else {
-                    handleKeys(event);
-                }
+                handleMapTouch(event);
                 return true;
             }
             if ((gameInputMode || inputMode == TOUCH_USERMAP || inputMode == TOUCH_CONSOLE) && handleKeys(event))

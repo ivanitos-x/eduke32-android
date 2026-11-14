@@ -107,6 +107,8 @@ uint64_t AndroidHeldButtons(void);
 void AndroidPublishTouchMode(void);
 int AndroidPublishedTouchMode(void);
 void AndroidMapZoom(float scale);
+void AndroidMapPan(float dx, float dy);
+void AndroidApplyMapPan(int32_t *x, int32_t *y, int32_t angle, uint16_t zoom);
 void AndroidApplyMapZoom(uint16_t *zoom);
 
 void AndroidMouseMenu(float x,float y);

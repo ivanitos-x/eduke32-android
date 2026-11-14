@@ -5182,6 +5182,17 @@ FAKE_F3:
     if (BUTTON(gamefunc_Map))
     {
         CONTROL_ClearButton(gamefunc_Map);
+#ifdef __ANDROID__
+        ud.overhead_on = ud.overhead_on ? 0 : 2;
+        ud.last_overhead = ud.overhead_on;
+        ud.scrollmode = ud.overhead_on != 0;
+        if (ud.scrollmode)
+        {
+            ud.folx = g_player[screenpeek].ps->opos.x;
+            ud.foly = g_player[screenpeek].ps->opos.y;
+            ud.fola = fix16_to_int(g_player[screenpeek].ps->oq16ang);
+        }
+#else
         if (ud.last_overhead != ud.overhead_on && ud.last_overhead)
         {
             ud.overhead_on = ud.last_overhead;
@@ -5194,16 +5205,6 @@ FAKE_F3:
             ud.last_overhead = ud.overhead_on;
         }
 
-#ifdef __ANDROID__
-        if (ud.overhead_on == 1)
-            ud.scrollmode = 0;
-        else if (ud.overhead_on == 2)
-        {
-            ud.scrollmode = 1;
-            ud.folx = g_player[screenpeek].ps->opos.x;
-            ud.foly = g_player[screenpeek].ps->opos.y;
-            ud.fola = fix16_to_int(g_player[screenpeek].ps->oq16ang);
-        }
 #endif
         g_restorePalette = 1;
         G_UpdateScreenArea();

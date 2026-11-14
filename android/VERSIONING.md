@@ -312,3 +312,10 @@ increment the code as specified above.
 The intermittent enemy texture glitch remains open. The user observed that
 opening the notification shade or returning to the game clears the glitch.
 A device log confirms that a resume rebuilt the renderer resources.
+
+## 0.6.10 (code 56)
+
+The Android map button opens the textured automap and closes it on the next
+tap. Drag with one finger to pan and pinch with two fingers to zoom.
+Gradle debug build passed. On-device gesture and rendering checks are pending.
+APK SHA-256: bc7fe4dd1b970e62f460172eac3e5dc85afa2eae23db45c812140cc5b9a98d04.

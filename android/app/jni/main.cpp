@@ -232,6 +232,12 @@ Java_com_codex_eduke32_GameActivity_nativeMapZoom(JNIEnv *, jclass, jfloat scale
     AndroidMapZoom(scale);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_codex_eduke32_GameActivity_nativeMapPan(JNIEnv *, jclass, jfloat dx, jfloat dy)
+{
+    AndroidMapPan(dx, dy);
+}
+
 static std::string AndroidFindChild(std::string const &directory, char const *name)
 {
     if (directory.empty()) return {};
