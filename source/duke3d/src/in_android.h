@@ -1,3 +1,5 @@
+#pragma once
+
 #include "function.h"
 
 #ifdef __cplusplus
@@ -54,8 +56,9 @@ typedef enum {
     TOUCH_SCREEN_MENU, //Normal menu
     TOUCH_SCREEN_MENU_NOBACK, // menu without back button
     TOUCH_SCREEN_GAME, //Normal game screen
-    TOUCH_SCREEN_AUTOMAP, //When auto map is up (not used yet)
-    TOUCH_SCREEN_CONSOLE //When Console is up
+    TOUCH_SCREEN_AUTOMAP, // In-game map
+    TOUCH_SCREEN_CONSOLE, //When Console is up
+    TOUCH_SCREEN_USERMAP
 } touchscreemode_t;
 
 
@@ -103,6 +106,8 @@ void AndroidResetButtons(void);
 uint64_t AndroidHeldButtons(void);
 void AndroidPublishTouchMode(void);
 int AndroidPublishedTouchMode(void);
+void AndroidMapZoom(float scale);
+void AndroidApplyMapZoom(uint16_t *zoom);
 
 void AndroidMouseMenu(float x,float y);
 void AndroidMouseMenuButton(int state,int button);

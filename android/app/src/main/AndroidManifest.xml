@@ -4,7 +4,10 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <application android:name="com.codex.eduke32.DiagnosticApp" android:allowBackup="false" android:enableOnBackInvokedCallback="true" android:icon="@mipmap/eduke32_icon" android:label="@string/eduke_name"
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <application android:name="com.codex.eduke32.DiagnosticApp" android:allowBackup="false" android:requestLegacyExternalStorage="true" android:enableOnBackInvokedCallback="true" android:icon="@mipmap/eduke32_icon" android:label="@string/eduke_name"
         android:theme="@style/AppTheme" android:hardwareAccelerated="true">
         <activity android:name="com.codex.eduke32.LauncherActivity" android:exported="true">
             <intent-filter>
@@ -17,7 +20,7 @@
             android:exported="false" android:label="@string/eduke_name"
             android:launchMode="singleInstance" android:screenOrientation="sensorLandscape"
             android:preferMinimalPostProcessing="true" />
-        <activity android:name="com.codex.eduke32.ControlLayoutActivity"
+        <activity android:name="com.codex.eduke32.ControlLayoutActivity" android:process=":game"
             android:exported="false" android:screenOrientation="sensorLandscape"
             android:label="Arrange controls" />
         <provider android:name="com.codex.eduke32.LogFileProvider"

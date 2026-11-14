@@ -11878,7 +11878,7 @@ static void videoAllocateBuffers(void)
 }
 
 #ifdef USE_OPENGL
-static void PolymostProcessVoxels(void)
+static void ProcessOpenGLVoxels(void)
 {
 # ifdef USE_GLEXT
     for (bssize_t i = 0; i < MAXVOXELS; i++)
@@ -11911,6 +11911,12 @@ static void PolymostProcessVoxels(void)
         if (voxfilenames[i])
         {
             voxmodels[i] = voxload(voxfilenames[i]);
+            if (!voxmodels[i])
+            {
+                LOG_F(WARNING, "Could not generate OpenGL voxel mesh for %s", voxfilenames[i]);
+                DO_FREE_AND_NULL(voxfilenames[i]);
+                continue;
+            }
             voxmodels[i]->scale = voxscale[i]*(1.f/65536.f);
 # ifdef USE_GLEXT
             voxvboalloc(voxmodels[i]);
@@ -12051,8 +12057,7 @@ int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daups
         polymost_glreset();
         polymost_glinit();
 
-        if (videoGetRenderMode() == REND_POLYMOST)
-            PolymostProcessVoxels();
+        ProcessOpenGLVoxels();
     }
 # ifdef POLYMER
     if (videoGetRenderMode() == REND_POLYMER && !polymer_init())

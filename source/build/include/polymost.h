@@ -148,7 +148,11 @@ static FORCE_INLINE int32_t eligible_for_tileshades(int32_t const picnum, int32_
 
 static FORCE_INLINE int polymost_useindexedtextures(void)
 {
+#ifdef __ANDROID__
+    return 0;
+#else
     return videoGetRenderMode() == REND_POLYMOST && r_useindexedcolortextures && gltexfiltermode == 0;
+#endif
 }
 
 static FORCE_INLINE int polymost_usetileshades(void)

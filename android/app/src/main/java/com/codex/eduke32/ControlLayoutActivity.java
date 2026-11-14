@@ -25,6 +25,8 @@ public final class ControlLayoutActivity extends Activity {
     private final float[] sizes={1,1,1,1,1,1,1,1,1,1};
     private android.widget.SeekBar sizeSlider;
     private TextView help;
+    private final java.util.ArrayList<CustomTouchButtons.Button> custom = new java.util.ArrayList<>();
+    private Button editBinding;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -33,6 +35,7 @@ public final class ControlLayoutActivity extends Activity {
                 View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                         | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         loadPositions();
+        custom.addAll(CustomTouchButtons.load(this));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -47,6 +50,16 @@ public final class ControlLayoutActivity extends Activity {
         help.setTextSize(16);
         toolbar.addView(help, new LinearLayout.LayoutParams(0, -2, 1));
 
+        Button add = new Button(this);
+        add.setText("Add button");
+        add.setOnClickListener(view -> chooseBinding(-1));
+        toolbar.addView(add);
+        editBinding = new Button(this);
+        editBinding.setText("Edit button");
+        editBinding.setVisibility(View.GONE);
+        editBinding.setOnClickListener(view -> chooseBinding(preview.selected - NAMES.length));
+        toolbar.addView(editBinding);
+
         Button reset = new Button(this);
         reset.setText("Reset");
         reset.setOnClickListener(v -> {
@@ -54,6 +67,7 @@ public final class ControlLayoutActivity extends Activity {
             System.arraycopy(DEFAULT_Y, 0, y, 0, y.length);
             java.util.Arrays.fill(sizes,1f);
             preview.selected=-1; sizeSlider.setEnabled(false);
+            editBinding.setVisibility(View.GONE);
             savePositions();
             preview.invalidate();
         });
@@ -71,13 +85,18 @@ public final class ControlLayoutActivity extends Activity {
         sizeSlider.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(android.widget.SeekBar bar,int value,boolean fromUser) {
                 if(fromUser && preview!=null && preview.selected>=0) {
-                    sizes[preview.selected]=.65f+value/100f;
-                    help.setText(NAMES[preview.selected]+" • "+Math.round(sizes[preview.selected]*100)+"%");
-                    preview.invalidate(); savePositions();
+                    int index = preview.selected;
+                    if (index < NAMES.length) sizes[index]=.65f+value/100f;
+                    else custom.get(index - NAMES.length).size = .65f+value/100f;
+                    preview.describeSelection();
+                    preview.invalidate();
                 }
             }
             public void onStartTrackingTouch(android.widget.SeekBar bar) { }
-            public void onStopTrackingTouch(android.widget.SeekBar bar) { }
+            public void onStopTrackingTouch(android.widget.SeekBar bar) {
+                if (preview.selected >= NAMES.length) saveCustom();
+                else if (preview.selected >= 0) savePositions();
+            }
         });
         toolbar.addView(sizeSlider,new LinearLayout.LayoutParams(dp(150),-2));
         preview = new Preview(this);
@@ -87,9 +106,38 @@ public final class ControlLayoutActivity extends Activity {
 
     private int dp(float value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
 
+    private void saveCustom() {
+        if (!CustomTouchButtons.save(this, custom))
+            android.widget.Toast.makeText(this, "Could not save touch buttons", android.widget.Toast.LENGTH_LONG).show();
+    }
+
+    private void chooseBinding(int index) {
+        if (index < 0 && custom.size() >= CustomTouchButtons.LIMIT) {
+            android.widget.Toast.makeText(this, "Custom button limit reached", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        boolean constEdit = index >= 0 && index < custom.size();
+        android.app.AlertDialog.Builder dialog = new android.app.AlertDialog.Builder(this)
+                .setTitle(constEdit ? "Change binding" : "Add button")
+                .setItems(CustomTouchButtons.LABELS, (choice, action) -> {
+                    if (constEdit) custom.get(index).action = action;
+                    else custom.add(new CustomTouchButtons.Button(action));
+                    saveCustom();
+                    preview.select(NAMES.length + (constEdit ? index : custom.size() - 1));
+                })
+                .setNegativeButton("Cancel", null);
+        if (constEdit) dialog.setNeutralButton("Remove", (choice, which) -> {
+            custom.remove(index);
+            saveCustom();
+            preview.select(-1);
+        });
+        dialog.show();
+    }
+
     private void loadPositions() {
         android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         for (int i = 0; i < NAMES.length; i++) {
+            if (i == GameActivity.LEGACY_SATCHEL_SLOT) continue;
             String id = PREF_IDS[i];
             x[i] = prefs.getFloat("x_" + id, DEFAULT_X[i]);
             y[i] = prefs.getFloat("y_" + id, DEFAULT_Y[i]);
@@ -100,6 +148,7 @@ public final class ControlLayoutActivity extends Activity {
     private void savePositions() {
         android.content.SharedPreferences.Editor editor = getSharedPreferences(PREFS, MODE_PRIVATE).edit();
         for (int i = 0; i < NAMES.length; i++) {
+            if (i == GameActivity.LEGACY_SATCHEL_SLOT) continue;
             String id = PREF_IDS[i];
             editor.putFloat("x_" + id, x[i]).putFloat("y_" + id, y[i]).putFloat("size_"+id,sizes[i]);
         }
@@ -116,16 +165,38 @@ public final class ControlLayoutActivity extends Activity {
         Preview(Context context) { super(context); }
 
         private float radius() { return Math.max(42f, Math.min(getWidth(), getHeight()) * .078f); }
-        private float cx(int i) { return x[i] * getWidth(); }
-        private float cy(int i) { return y[i] * getHeight(); }
+        private float cx(int i) { return (i < NAMES.length ? x[i] : custom.get(i - NAMES.length).x) * getWidth(); }
+        private float cy(int i) { return (i < NAMES.length ? y[i] : custom.get(i - NAMES.length).y) * getHeight(); }
+
+        private float scale(int i) {
+            return i < NAMES.length ? sizes[i] : custom.get(i - NAMES.length).size;
+        }
+        private void describeSelection() {
+            if (selected < 0) {
+                help.setText("Drag to move • Select to resize");
+                return;
+            }
+            String label = selected < NAMES.length ? NAMES[selected]
+                    : CustomTouchButtons.LABELS[custom.get(selected - NAMES.length).action];
+            help.setText(label + " • " + Math.round(scale(selected) * 100) + "%");
+        }
+        private void select(int index) {
+            selected = index;
+            sizeSlider.setEnabled(index >= 0);
+            editBinding.setVisibility(index >= NAMES.length ? View.VISIBLE : View.GONE);
+            if (index >= 0) sizeSlider.setProgress(Math.round((scale(index) - .65f) * 100));
+            describeSelection();
+            invalidate();
+        }
 
         private float elementRadius(int i) {
             float min=Math.min(getWidth(),getHeight());
-            return sizes[i]*(i==8?Math.max(80f,min*.175f):i==9?Math.max(64f,min*.14f):radius()*(i==7?.82f:1f));
+            return scale(i)*(i==8?Math.max(80f,min*.175f):i==9?Math.max(64f,min*.14f):radius()*(i==7?.82f:1f));
         }
         @Override protected void onDraw(Canvas canvas) {
             canvas.drawColor(Color.rgb(9,11,15));
             for(int i=0;i<NAMES.length;i++) {
+                if (i == GameActivity.LEGACY_SATCHEL_SLOT) continue;
                 float px=cx(i),py=cy(i),r=elementRadius(i);
                 if(i>=8) artwork.stick(canvas,px,py,r,0,0,i==selected);
                 else artwork.button(canvas,px,py,r,i,i==selected);
@@ -133,6 +204,10 @@ public final class ControlLayoutActivity extends Activity {
                 paint.setTextAlign(Paint.Align.CENTER);
                 paint.setTextSize(Math.max(12f,radius()*.24f));
                 canvas.drawText(NAMES[i]+(i>=8?" (floating)":""),px,py+r+paint.getTextSize()*1.3f,paint);
+            }
+            for (int i = NAMES.length; i < NAMES.length + custom.size(); i++) {
+                CustomTouchButtons.draw(canvas, paint, custom.get(i - NAMES.length),
+                        cx(i), cy(i), elementRadius(i), i == selected);
             }
         }
 
@@ -142,18 +217,17 @@ public final class ControlLayoutActivity extends Activity {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 float nearest = Float.MAX_VALUE;
                 selected = -1;
-                for (int i = 0; i < NAMES.length; i++) {
+                for (int i = 0; i < NAMES.length + custom.size(); i++) {
+                    if (i == GameActivity.LEGACY_SATCHEL_SLOT) continue;
                     float dx = px - cx(i), dy = py - cy(i);
                     float distance = dx * dx + dy * dy;
                     float limit = elementRadius(i)*1.15f;
                     if (distance <= limit * limit && distance < nearest) { nearest = distance; selected = i; }
                 }
                 dragging=selected>=0;
-                sizeSlider.setEnabled(dragging);
+                select(selected);
                 if(dragging) {
                     offsetX=px-cx(selected); offsetY=py-cy(selected);
-                    sizeSlider.setProgress(Math.round((sizes[selected]-.65f)*100));
-                    help.setText(NAMES[selected]+" • "+Math.round(sizes[selected]*100)+"%");
                 }
                 invalidate();
                 return true;
@@ -161,13 +235,22 @@ public final class ControlLayoutActivity extends Activity {
             if (event.getActionMasked() == MotionEvent.ACTION_MOVE && selected >= 0 && dragging) {
                 float marginX = Math.min(.08f, radius() / Math.max(1f, getWidth()));
                 float marginY = Math.min(.10f, radius() / Math.max(1f, getHeight()));
-                x[selected] = Math.max(marginX, Math.min(1f - marginX, (px-offsetX) / Math.max(1f, getWidth())));
-                y[selected] = Math.max(marginY, Math.min(1f - marginY, (py-offsetY) / Math.max(1f, getHeight())));
+                float nextX = Math.max(marginX, Math.min(1f - marginX, (px-offsetX) / Math.max(1f, getWidth())));
+                float nextY = Math.max(marginY, Math.min(1f - marginY, (py-offsetY) / Math.max(1f, getHeight())));
+                if (selected < NAMES.length) {
+                    x[selected] = nextX;
+                    y[selected] = nextY;
+                } else {
+                    CustomTouchButtons.Button button = custom.get(selected - NAMES.length);
+                    button.x = nextX;
+                    button.y = nextY;
+                }
                 invalidate();
                 return true;
             }
             if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                if (selected >= 0) savePositions();
+                if (selected >= NAMES.length) saveCustom();
+                else if (selected >= 0) savePositions();
                 dragging=false;
                 invalidate();
                 return true;

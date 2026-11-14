@@ -20,12 +20,33 @@ extern "C" double AndroidGetDisplayRefreshRate(void)
 #include <android/asset_manager_jni.h>
 #include <SDL.h>
 #include <SDL_system.h>
+
+extern "C" void AndroidOpenControlLayout(void)
+{
+    auto *env = static_cast<JNIEnv *>(SDL_AndroidGetJNIEnv());
+    if (!env) return;
+    auto activity = static_cast<jobject>(SDL_AndroidGetActivity());
+    if (!activity) return;
+    jclass cls = env->GetObjectClass(activity);
+    if (cls)
+    {
+        jmethodID method = env->GetMethodID(cls, "openControlLayout", "()V");
+        if (method) env->CallVoidMethod(activity, method);
+        env->DeleteLocalRef(cls);
+    }
+    env->DeleteLocalRef(activity);
+    if (env->ExceptionCheck())
+    {
+        env->ExceptionClear();
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot open the touch layout editor");
+    }
+}
 #include "compat.h"
 #include "in_android.h"
 #ifdef POLYMER
 extern char nogl;
 
-static bool AndroidPolymerEnabled(std::string const &configPath)
+static bool AndroidOpenGLEnabled(std::string const &configPath)
 {
     std::ifstream config(configPath.c_str());
     std::string line;
@@ -50,10 +71,10 @@ static bool AndroidPolymerEnabled(std::string const &configPath)
         size_t const keyEnd = key.find_last_not_of(" \t");
         if (keyEnd != std::string::npos)
             key.erase(keyEnd + 1);
-        if (key != "Polymer")
+        if (key != "ScreenBPP")
             continue;
         size_t const value = line.find_first_not_of(" \t", equal + 1);
-        return value != std::string::npos && line[value] == '1';
+        return value != std::string::npos && strtol(line.c_str()+value,nullptr,10) > 8;
     }
     return false;
 }
@@ -64,8 +85,30 @@ droidsysinfo_t droidinfo = { 48000, 1024, 1280, 720 };
 int ALSA_ClientID = 0;
 int ALSA_PortID = 0;
 
-static int mappedActions[13] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+static int mappedActions[16] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 static uint8_t actionCounts[0x300];
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_codex_eduke32_GameActivity_nativeCustomAction(JNIEnv *, jclass, jint action, jboolean down)
+{
+    static int const actions[] = {
+        gamefunc_Fire, gamefunc_Alt_Fire, gamefunc_Jump, gamefunc_Crouch, gamefunc_Open, gamefunc_Run,
+        gamefunc_Quick_Kick, gamefunc_Next_Weapon, gamefunc_Previous_Weapon, gamefunc_Last_Weapon,
+        gamefunc_Inventory, gamefunc_Inventory_Left, gamefunc_Inventory_Right, gamefunc_MedKit,
+        gamefunc_Jetpack, gamefunc_NightVision, gamefunc_Steroids, gamefunc_Holo_Duke, gamefunc_Map,
+        gamefunc_Quick_Save, gamefunc_Quick_Load,
+    };
+    if ((unsigned)action >= sizeof(actions) / sizeof(actions[0])) return;
+    int const mapped = actions[action];
+    auto &count = actionCounts[mapped];
+    if (down)
+    {
+        if (AndroidPublishedTouchMode() == TOUCH_SCREEN_GAME && count++ == 0)
+            AndroidAction(1, mapped);
+    }
+    else if (count && --count == 0)
+        AndroidAction(0, mapped);
+}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_codex_eduke32_GameActivity_nativeAction(JNIEnv *, jclass, jint action, jboolean down)
@@ -73,9 +116,15 @@ Java_com_codex_eduke32_GameActivity_nativeAction(JNIEnv *, jclass, jint action, 
     static int const actions[] = {
         gamefunc_Fire, gamefunc_Jump, gamefunc_Open, gamefunc_Crouch,
         gamefunc_Inventory, gamefunc_Next_Weapon,
-        gamefunc_Quick_Kick, MENU_SELECT, MENU_BACK, MENU_UP, MENU_DOWN, MENU_LEFT, MENU_RIGHT
+        gamefunc_Quick_Kick, MENU_SELECT, MENU_BACK, MENU_UP, MENU_DOWN, MENU_LEFT, MENU_RIGHT,
+        gamefunc_Inventory_Left, gamefunc_Inventory_Right, gamefunc_Map
     };
 
+    if (action == 16 || action == 17)
+    {
+        AndroidKeyEvent(down, action == 16 ? SDL_SCANCODE_GRAVE : SDL_SCANCODE_BACKSPACE, 0);
+        return;
+    }
     if (action < 0 || action >= (int)(sizeof(actions) / sizeof(actions[0])))
         return;
 
@@ -100,7 +149,7 @@ Java_com_codex_eduke32_GameActivity_nativeAction(JNIEnv *, jclass, jint action, 
                 else if (action == 1 || action == 3) mapped = MENU_BACK;
                 else if (action == 5) mapped = MENU_DOWN;
             }
-            else if (mode == TOUCH_SCREEN_MENU || mode == TOUCH_SCREEN_MENU_NOBACK || action == 7 || action == 8)
+            else if (mode == TOUCH_SCREEN_MENU || mode == TOUCH_SCREEN_MENU_NOBACK || mode == TOUCH_SCREEN_USERMAP || action == 7 || action == 8)
                 mapped = action == 6 ? MENU_SELECT : actions[action];
             else
             {
@@ -177,6 +226,12 @@ Java_com_codex_eduke32_GameActivity_nativeTouchMode(JNIEnv *, jclass)
     return AndroidPublishedTouchMode();
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_codex_eduke32_GameActivity_nativeMapZoom(JNIEnv *, jclass, jfloat scale)
+{
+    AndroidMapZoom(scale);
+}
+
 static std::string AndroidFindChild(std::string const &directory, char const *name)
 {
     if (directory.empty()) return {};
@@ -223,9 +278,11 @@ static int AndroidRunEngine(int argc, char const **argv)
 extern "C" int SDL_main(int argc, char **argv)
 {
     SDL_Log("SDL_main entered; starting Android bootstrap");
+    setenv("EDUKE32_DEMAND_IO","1",1);
     std::vector<char *> filtered;
     for(int i=0;i<argc;++i) {
         if(i>0 && !strcmp(argv[i],"-androidsafe")) androidEmergencyStart=true;
+        else if(i>0 && !strcmp(argv[i],"-androidprecache")) setenv("EDUKE32_DEMAND_IO","0",1);
         else filtered.push_back(argv[i]);
     }
     argc=(int)filtered.size();
@@ -246,9 +303,10 @@ extern "C" int SDL_main(int argc, char **argv)
         std::string configDir = configRoot + "/eduke32";
         mkdir(configRoot.c_str(), 0700);
         mkdir(configDir.c_str(), 0700);
+        setenv("EDUKE32_TOUCH_SETTINGS", (configDir + "/android-touch.cfg").c_str(), 1);
 #ifdef POLYMER
         // Use the original 8-bit classic renderer when Polymer is disabled.
-        nogl = AndroidPolymerEnabled(configDir + "/eduke32.cfg") ? 0 : 1;
+        nogl = AndroidOpenGLEnabled(configDir + "/eduke32.cfg") ? 0 : 1;
 #endif
         // Keep the bundled GeneralUser bank in app-private storage so the MIDI
         // driver can open it through the normal VFS and app upgrades preserve it.
@@ -322,6 +380,37 @@ extern "C" int SDL_main(int argc, char **argv)
         std::ifstream presetInput((configDir + "/android-game-preset.txt").c_str());
         std::string preset;
         std::getline(presetInput, preset);
+        std::string directMarker = configDir + "/" + (preset == "bloodcm" ? "android-bloodcm-dir.txt.direct" : "android-game-dir.txt.direct");
+        std::ifstream directInput(directMarker);
+        if (directInput.is_open() && !androidEmergencyStart)
+        {
+            std::string folder; std::getline(directInput,folder);
+            if (folder.empty() || chdir(folder.c_str()) != 0) {
+                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Game folder","Cannot access the selected working folder. Check storage permission in the launcher.",nullptr);
+                return 1;
+            }
+            unsetenv("DUKE3DGRP");
+            std::string cfg = preset == "bloodcm" ? "bloodcm-android.cfg" : "eduke32.cfg";
+#ifdef POLYMER
+            nogl = AndroidOpenGLEnabled(folder + "/" + cfg) ? 0 : 1;
+#endif
+            std::vector<char const *> directArgs={"eduke32","-usecwd","-nosetup","-cfg",cfg.c_str()};
+            std::string group,script;
+            if(preset=="bloodcm") {
+                group=AndroidFindChild(folder,"BloodCM.grp");
+                script=AndroidFindChild(AndroidFindChild(folder,"blcons"),"bloodcm.con");
+                if(group.empty() || script.empty()) {
+                    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"BloodCM","Game files are missing from the working folder.",nullptr);return 1;
+                }
+                // Group lookup expects a name in the current search directory.
+                group.erase(0, folder.size() + 1);
+                directArgs.insert(directArgs.end(),{"-gamegrp",group.c_str(),"-x",script.c_str(),"-h","bloodcm.def"});
+                g_bloodCMCompat=1;
+            }
+            for(int i=1;i<argc;++i)directArgs.push_back(argv[i]);
+            SDL_Log("PC working directory (read/write): %s",folder.c_str());
+            return AndroidRunEngine((int)directArgs.size(),directArgs.data());
+        }
         if (preset == "bloodcm")
         {
             std::ifstream folderInput((configDir + "/android-bloodcm-dir.txt").c_str());
@@ -346,7 +435,7 @@ extern "C" int SDL_main(int argc, char **argv)
             // A local alias lets the VFS open the shared bank without absolute paths.
             symlink(soundFontPath.c_str(), (profile + "/generaluser.sf2").c_str());
 #ifdef POLYMER
-            nogl = AndroidPolymerEnabled(profile + "/bloodcm-android.cfg") ? 0 : 1;
+            nogl = AndroidOpenGLEnabled(profile + "/bloodcm-android.cfg") ? 0 : 1;
 #endif
             unsetenv("DUKE3DGRP");
             if (chdir(profile.c_str()) != 0)

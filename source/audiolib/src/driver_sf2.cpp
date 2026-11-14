@@ -29,7 +29,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 int SF2_EffectSampleBlockSize = 16;
 
 #define TSF_IMPLEMENTATION
+#ifndef __ANDROID__
 #define TSF_NO_STDIO
+#endif
 #define TSF_RENDER_EFFECTSAMPLEBLOCK SF2_EffectSampleBlockSize
 #define TSF_MALLOC  Xmalloc
 #define TSF_REALLOC Xrealloc
@@ -72,11 +74,30 @@ const char *SF2Drv_ErrorString(int ErrorNumber)
 }
 
 static int sf2_stream_read(void *handle, void *ptr, unsigned int size) { return kread(*(buildvfs_kfd *)handle, ptr, size); };
-static int sf2_stream_skip(void *handle, unsigned int size)            { return !klseek(*(buildvfs_kfd *)handle, size, SEEK_CUR); };
+static int sf2_stream_skip(void *handle, unsigned int size)            { return klseek(*(buildvfs_kfd *)handle, size, SEEK_CUR) >= 0; };
 
 static int SF2_LoadBank(char const *const filename)
 {
     buildvfs_kfd sf2_kfd    = kopen4loadfrommod(filename, 0);
+#ifdef __ANDROID__
+    // A mod's working folder need not contain the application's bundled MIDI bank.
+    if (sf2_kfd == buildvfs_kfd_invalid
+        && (!Bstrcasecmp(filename, "GeneralUser GS SoftSynth v1.44.sf2")
+            || !Bstrcasecmp(filename, "generaluser.sf2")))
+        if (char const *home = getenv("HOME"))
+        {
+            char bundled[BMAX_PATH];
+            Bsnprintf(bundled, sizeof(bundled), "%s/.config/eduke32/GeneralUser GS SoftSynth v1.44.sf2", home);
+            if (tsf *bank = tsf_load_filename(bundled))
+            {
+                tsf_close(sf2_synth);
+                sf2_synth = bank;
+                VLOG_F(LOG_ASS, "Loaded bundled Android SoundFont");
+                return SF2_Ok;
+            }
+        }
+#endif
+
     tsf_stream   sf2_stream = { &sf2_kfd, &sf2_stream_read, &sf2_stream_skip };
 
     if (sf2_kfd != buildvfs_kfd_invalid)

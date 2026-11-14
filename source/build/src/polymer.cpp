@@ -1785,11 +1785,28 @@ void                polymer_drawsprite(int32_t snum)
 
     int32_t pTile = Ptile2tile(tspr->picnum,tspr->pal);
 
+    if (usevoxels && !(spriteext[spritenum].flags & SPREXT_NOTMD)
+        && (!depth || mirrors[depth-1].plane))
+    {
+        int const voxelId = (tsprflags & TSPR_FLAGS_SLAB) ? tspr->picnum : tiletovox[tspr->picnum];
+        if ((unsigned)voxelId < MAXVOXELS && polymer_voxdraw(voxmodels[voxelId], tspr, voxelId))
+            return;
+    }
+
     if (usemodels && tile2model[pTile].modelid >= 0 &&
         tile2model[pTile].framenum >= 0 &&
         !(spriteext[spritenum].flags & SPREXT_NOTMD) &&
         models[tile2model[pTile].modelid]->mdnum != 1)
     {
+#ifdef __ANDROID__
+        static uint8_t reportedModels[bitmap_size(MAXTILES)];
+        if ((unsigned)tspr->picnum < MAXTILES && !bitmap_test(reportedModels, tspr->picnum))
+        {
+            bitmap_set(reportedModels, tspr->picnum);
+            LOG_F(INFO, "Android model dispatch: Polymer tile=%d palette=%d model=%d",
+                  tspr->picnum, tspr->pal, tile2model[pTile].modelid);
+        }
+#endif
         buildgl_setEnabled(GL_CULL_FACE);
         SWITCH_CULL_DIRECTION;
         polymer_drawmdsprite(tspr);
@@ -2146,12 +2163,27 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
     prcanbucket = 1;
     prdidsky = false;
 
+#ifdef __ANDROID__
+    uint64_t const passStart = timerGetNanoTicks();
+    uint64_t sectorUpdateTicks = 0, sectorDrawTicks = 0, wallDrawTicks = 0;
+    int wallDrawCount = 0;
+#endif
     while (front != back)
     {
         sec = (usectorptr_t)&sector[sectorqueue[front]];
 
+#ifdef __ANDROID__
+        uint64_t const sectorStart = timerGetNanoTicks();
+#endif
         polymer_pokesector(sectorqueue[front]);
+#ifdef __ANDROID__
+        uint64_t const sectorUpdated = timerGetNanoTicks();
+        sectorUpdateTicks += sectorUpdated - sectorStart;
+#endif
         polymer_drawsector(sectorqueue[front], FALSE);
+#ifdef __ANDROID__
+        sectorDrawTicks += timerGetNanoTicks() - sectorUpdated;
+#endif
         polymer_scansprites(sectorqueue[front], localtsprite, &localspritesortcnt);
 
         doquery = 0;
@@ -2270,7 +2302,16 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
         do
         {
             if (wallFacesView(sec->wallptr + i))
+            {
+#ifdef __ANDROID__
+                uint64_t const wallStart = timerGetNanoTicks();
+#endif
                 polymer_drawwall(sectorqueue[front], sec->wallptr + i);
+#ifdef __ANDROID__
+                wallDrawTicks += timerGetNanoTicks() - wallStart;
+                ++wallDrawCount;
+#endif
+            }
         }
         while (--i >= 0);
 #ifdef YAX_ENABLE
@@ -2336,6 +2377,19 @@ static void         polymer_displayrooms(const int16_t dacursectnum)
         front++;
     }
 
+#ifdef __ANDROID__
+    uint64_t const passEnd = timerGetNanoTicks();
+    uint64_t const tickRate = timerGetNanoTickRate();
+    static uint64_t lastPassLog;
+    if (depth == 0 && passEnd - passStart >= tickRate / 10 && passEnd - lastPassLog >= tickRate)
+    {
+        lastPassLog = passEnd;
+        auto const ms = [tickRate](uint64_t ticks) { return 1000.0 * ticks / tickRate; };
+        uint64_t const other = passEnd - passStart - sectorUpdateTicks - sectorDrawTicks - wallDrawTicks;
+        LOG_F(INFO, "Polymer slow traversal: sectors=%d walls=%d update=%.1fms sectorDraw=%.1fms wallDraw=%.1fms other=%.1fms",
+              front, wallDrawCount, ms(sectorUpdateTicks), ms(sectorDrawTicks), ms(wallDrawTicks), ms(other));
+    }
+#endif
     polymer_emptybuckets();
 
     // do the actual shaded drawing
@@ -2677,8 +2731,14 @@ static void         polymer_drawplane(_prplane* plane)
 
     if (plane->mapvbo_vertoffset != (uint32_t)-1)
     {
+#ifdef __ANDROID__
+        // Map geometry already lives in CPU arrays. GL4ES consumes it at draw time.
+        planevbo = 0;
+        geomfbooffset = 0;
+#else
         planevbo = prmapvbo;
         geomfbooffset = plane->mapvbo_vertoffset * sizeof(_prvert);
+#endif
     }
     else
     {
@@ -3179,6 +3239,7 @@ attributes:
             s->floor.mapvbo_vertoffset = sec->wallptr * 2;
             s->ceil.mapvbo_vertoffset = s->floor.mapvbo_vertoffset + sec->wallnum;
 
+#ifndef __ANDROID__
             GLintptr sector_offset = s->floor.mapvbo_vertoffset * sizeof(_prvert);
             GLsizeiptr cur_sector_size = sec->wallnum * sizeof(_prvert);
             buildgl_bindBuffer(GL_ARRAY_BUFFER, prmapvbo);
@@ -3187,6 +3248,7 @@ attributes:
             // ceiling
             glBufferSubData(GL_ARRAY_BUFFER, sector_offset + cur_sector_size, cur_sector_size, s->ceil.buffer);
             buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+#endif
         }
     }
 
@@ -3930,6 +3992,7 @@ static void         polymer_updatewall(int16_t wallnum)
         const GLintptr thiswalloffset = prwalldataoffset + (prwalldatasize * wallnum);
         const GLintptr thisoveroffset = thiswalloffset + proneplanesize;
         const GLintptr thismaskoffset = thisoveroffset + proneplanesize;
+#ifndef __ANDROID__
         buildgl_bindBuffer(GL_ARRAY_BUFFER, prmapvbo);
         glBufferSubData(GL_ARRAY_BUFFER, thiswalloffset, proneplanesize, w->wall.buffer);
         buildgl_bindBuffer(GL_ARRAY_BUFFER, prmapvbo);
@@ -3941,6 +4004,7 @@ static void         polymer_updatewall(int16_t wallnum)
         glBufferSubData(GL_ARRAY_BUFFER, 0, 4 * sizeof(GLfloat)* 5, w->bigportal);
         //glBufferSubData(GL_ARRAY_BUFFER, 4 * sizeof(GLfloat)* 5, 4 * sizeof(GLfloat)* 3, w->cap);
         buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+#endif
 
         w->wall.mapvbo_vertoffset = thiswalloffset / sizeof(_prvert);
         w->over.mapvbo_vertoffset = thisoveroffset / sizeof(_prvert);

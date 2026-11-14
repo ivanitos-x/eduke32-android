@@ -925,19 +925,51 @@ void CONFIG_WriteSettings(void) // save binds and aliases to <cfgname>_settings.
 }
 
 #ifdef __ANDROID__
-static void CONFIG_PutAndroidTouchSettings(void)
-{
-    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "LookSensitivity", droidinput.pitch_sens, FALSE);
-    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "TurnSensitivity", droidinput.yaw_sens, FALSE);
-    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "MoveSensitivity", droidinput.forward_sens, FALSE);
-    SCRIPT_PutDouble(ud.config.scripthandle, "Android Touch", "StrafeSensitivity", droidinput.strafe_sens, FALSE);
-}
 void CONFIG_SaveAndroidTouchSettings(void)
 {
-    // Called by menu code on the game thread, never from Java/UI callbacks.
-    if (ud.config.setupread != 2 || ud.config.scripthandle < 0) return;
-    CONFIG_PutAndroidTouchSettings();
-    SCRIPT_Save(ud.config.scripthandle, g_setupFileName);
+    char const *path = getenv("EDUKE32_TOUCH_SETTINGS");
+    if (!path) return;
+    char temp[BMAX_PATH];
+    if (Bsnprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) return;
+    FILE *file = fopen(temp, "w");
+    if (!file)
+    {
+        LOG_F(WARNING, "Cannot open Android touch settings for writing: %s", strerror(errno));
+        return;
+    }
+    bool const written = fprintf(file, "%.9g %.9g %.9g %.9g\n", droidinput.pitch_sens,
+                                 droidinput.yaw_sens, droidinput.forward_sens, droidinput.strafe_sens) > 0;
+    bool const closed = fclose(file) == 0;
+    if (!written || !closed || rename(temp, path) != 0)
+        LOG_F(WARNING, "Cannot save Android touch settings: %s", strerror(errno));
+}
+
+void CONFIG_LoadAndroidTouchSettings(void)
+{
+    char const *path = getenv("EDUKE32_TOUCH_SETTINGS");
+    if (!path) return;
+    FILE *file = fopen(path, "r");
+    if (!file)
+    {
+        // Import the effective values from the previous per-game setup once.
+        if (errno == ENOENT) CONFIG_SaveAndroidTouchSettings();
+        return;
+    }
+    float pitch, yaw, move, strafe;
+    int const count = fscanf(file, "%f %f %f %f", &pitch, &yaw, &move, &strafe);
+    fclose(file);
+    auto const valid = [](float value) { return value >= 1.f && value <= 9.f; };
+    if (count != 4 || !valid(pitch) || !valid(yaw) || !valid(move) || !valid(strafe))
+    {
+        LOG_F(WARNING, "Ignoring invalid Android touch settings");
+        return;
+    }
+    droidinput.pitch_sens = pitch;
+    droidinput.yaw_sens = yaw;
+    droidinput.forward_sens = move;
+    droidinput.strafe_sens = strafe;
+    LOG_F(INFO, "Android touch sensitivity restored: turn=%.1f look=%.1f move=%.1f strafe=%.1f",
+          yaw, pitch, move, strafe);
 }
 #endif
 
@@ -1064,9 +1096,6 @@ void CONFIG_WriteSetup(uint32_t flags)
         SCRIPT_PutString(ud.config.scripthandle, "Comm Setup",commmacro,&ud.ridecule[dummy][0]);
     }
 
-#ifdef __ANDROID__
-    CONFIG_PutAndroidTouchSettings();
-#endif
     // save localization
     const char* locale = localeGetCurrent();
     SCRIPT_PutString(ud.config.scripthandle, "Misc", "Locale", locale ? locale : "en");

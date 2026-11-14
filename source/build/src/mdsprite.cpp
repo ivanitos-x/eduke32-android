@@ -1988,6 +1988,9 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
     float f, g, k0, k1, k2=0, k3=0, mat[16];  // inits: compiler-happy
     GLfloat pc[4];
     int32_t texunits = GL_TEXTURE0;
+#ifdef __ANDROID__
+    int submittedSurfaces = 0;
+#endif
 
     const int32_t owner = tspr->owner;
     const spriteext_t *const sext = &spriteext[((unsigned)owner < MAXSPRITES+MAXUNIQHUDID) ? owner : MAXSPRITES+MAXUNIQHUDID-1];
@@ -2274,7 +2277,18 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
         auto skinNum = tile2model[Ptile2tile(tspr->picnum, lpal)].skinnum;
         i = mdloadskin((md2model_t *)m, skinNum, globalpal, surfi);
         if (!i)
+        {
+#ifdef __ANDROID__
+            static uint8_t reportedMissingSkin[bitmap_size(MAXTILES)];
+            if ((unsigned)tspr->picnum < MAXTILES && !bitmap_test(reportedMissingSkin, tspr->picnum))
+            {
+                bitmap_set(reportedMissingSkin, tspr->picnum);
+                LOG_F(WARNING, "Android MD3: no drawable skin for tile=%d palette=%d skin=%d surface=%d",
+                      tspr->picnum, globalpal, skinNum, surfi);
+            }
+#endif
             continue;
+        }
         //i = mdloadskin((md2model *)m,tile2model[Ptile2tile(tspr->picnum,lpal)].skinnum,surfi); //hack for testing multiple surfaces per MD3
 
         auto sk = mdgetskinmap(m, globalpal, skinNum, surfi);
@@ -2461,6 +2475,9 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
         polymost_useDetailMapping(false);
         polymost_useGlowMapping(false);
 #endif
+#ifdef __ANDROID__
+        ++submittedSurfaces;
+#endif
     }
     //------------
 
@@ -2479,6 +2496,15 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
     polymost_resetVertexPointers();
 
     globalnoeffect=0;
+#ifdef __ANDROID__
+    static uint8_t reportedSurfaces[bitmap_size(MAXTILES)];
+    if ((unsigned)tspr->picnum < MAXTILES && !bitmap_test(reportedSurfaces, tspr->picnum))
+    {
+        bitmap_set(reportedSurfaces, tspr->picnum);
+        LOG_F(INFO, "Android MD3 surfaces: tile=%d submitted=%d total=%d frame=%d next=%d",
+              tspr->picnum, submittedSurfaces, m->head.numsurfs, m->cframe, m->nframe);
+    }
+#endif
     return 1;
 }
 
@@ -2640,7 +2666,19 @@ int32_t polymost_mddraw(tspriteptr_t tspr)
     if (vm->mdnum == 1)
         return polymost_voxdraw((voxmodel_t *)vm,tspr);
     else if (vm->mdnum == 3)
-        return polymost_md3draw((md3model_t *)vm,tspr);
+    {
+        int const drawn = polymost_md3draw((md3model_t *)vm, tspr);
+#ifdef __ANDROID__
+        static uint8_t reported[bitmap_size(MAXTILES)];
+        if ((unsigned)tspr->picnum < MAXTILES && !bitmap_test(reported, tspr->picnum))
+        {
+            bitmap_set(reported, tspr->picnum);
+            LOG_F(INFO, "Android MD3 draw: Polymost tile=%d palette=%d result=%d",
+                  tspr->picnum, tspr->pal, drawn);
+        }
+#endif
+        return drawn;
+    }
     return 0;
 }
 

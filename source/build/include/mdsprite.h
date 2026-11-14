@@ -239,6 +239,9 @@ void voxvbofree(voxmodel_t *vm);
 void voxfree(voxmodel_t *m);
 voxmodel_t *voxload(const char *filnam);
 int32_t polymost_voxdraw(voxmodel_t *m, tspriteptr_t const tspr);
+#ifdef POLYMER
+bool polymer_voxdraw(voxmodel_t *model, tspriteptr_t sprite, int voxelId);
+#endif
 
 int      md3postload_polymer(md3model_t* m);
 //int32_t md_thinoutmodel(int32_t modelid, uint8_t *usedframebitmap);

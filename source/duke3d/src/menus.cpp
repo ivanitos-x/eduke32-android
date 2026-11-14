@@ -224,6 +224,11 @@ MenuFont_t MF_Bluefont =              { { 5<<16, 7<<16 },   { 0, 0 }, 0,        
 MenuFont_t MF_Minifont =              { { 4<<16, 5<<16 },   { 1<<16, 1<<16 },0, 65536,              10<<16,             110<<16,            32768,              0,
                                         -1,                 10,                 0,                  0,                  2,                  2,                  0,
                                         0,                  0,                  16 };
+#ifdef __ANDROID__
+static MenuFont_t MF_SaveSlot;
+#else
+static MenuFont_t &MF_SaveSlot = MF_Minifont;
+#endif
 
 
 static MenuMenuFormat_t MMF_Top_Main =             { {  MENU_MARGIN_CENTER<<16, 55<<16, }, -(170<<16) };
@@ -956,10 +961,17 @@ static MenuEntry_t ME_TOUCHSETUP_INVERT = MAKE_MENUENTRY("Invert look:", &MF_Red
 
 MAKE_MENU_TOP_ENTRYLINK("Sensitivity", MEF_CenterMenu, TOUCHSENS, MENU_TOUCHSENS);
 MAKE_MENU_TOP_ENTRYLINK("Button Setup", MEF_CenterMenu, TOUCHBUTTONS, MENU_TOUCHBUTTONS);
+#ifdef __ANDROID__
+extern "C" void AndroidOpenControlLayout(void);
+MAKE_MENU_TOP_ENTRYLINK("Arrange controls", MEF_CenterMenu, TOUCHLAYOUT, MENU_NULL);
+#endif
 
 static MenuEntry_t *MEL_TOUCHSETUP [] = {
     &ME_TOUCHSENS,
     &ME_TOUCHBUTTONS,
+#ifdef __ANDROID__
+    &ME_TOUCHLAYOUT,
+#endif
 };
 
 static MenuEntry_t *MEL_TOUCHSENS [] = {
@@ -1227,17 +1239,17 @@ static MenuEntry_t *MEL_SCREENSETUP[] = {
 
 // Save and load will be filled in before every viewing of the save/load screen.
 static MenuLink_t MEO_LOAD = { MENU_LOADVERIFY, MA_None, };
-static MenuEntry_t ME_LOAD_TEMPLATE = MAKE_MENUENTRY( NULL, &MF_Minifont, &MEF_LoadSave, &MEO_LOAD, Link );
-static MenuEntry_t ME_LOAD_EMPTY = MAKE_MENUENTRY( NULL, &MF_Minifont, &MEF_LoadSave, nullptr, Dummy );
+static MenuEntry_t ME_LOAD_TEMPLATE = MAKE_MENUENTRY( NULL, &MF_SaveSlot, &MEF_LoadSave, &MEO_LOAD, Link );
+static MenuEntry_t ME_LOAD_EMPTY = MAKE_MENUENTRY( NULL, &MF_SaveSlot, &MEF_LoadSave, nullptr, Dummy );
 static MenuEntry_t *ME_LOAD;
 static MenuEntry_t **MEL_LOAD;
 
 static char const s_NewSaveGame[] = "(New Save Game)";
-static MenuString_t MEO_SAVE_TEMPLATE = MAKE_MENUSTRING( NULL, &MF_Minifont, MAXSAVEGAMENAME, 0 );
-static MenuString_t MEO_SAVE_NEW = MAKE_MENUSTRING( NULL, &MF_Minifont, MAXSAVEGAMENAME, 0 );
+static MenuString_t MEO_SAVE_TEMPLATE = MAKE_MENUSTRING( NULL, &MF_SaveSlot, MAXSAVEGAMENAME, 0 );
+static MenuString_t MEO_SAVE_NEW = MAKE_MENUSTRING( NULL, &MF_SaveSlot, MAXSAVEGAMENAME, 0 );
 static MenuString_t *MEO_SAVE;
-static MenuEntry_t ME_SAVE_TEMPLATE = MAKE_MENUENTRY( NULL, &MF_Minifont, &MEF_LoadSave, &MEO_SAVE_TEMPLATE, String );
-static MenuEntry_t ME_SAVE_NEW = MAKE_MENUENTRY( s_NewSaveGame, &MF_Minifont, &MEF_LoadSave, &MEO_SAVE_NEW, String );
+static MenuEntry_t ME_SAVE_TEMPLATE = MAKE_MENUENTRY( NULL, &MF_SaveSlot, &MEF_LoadSave, &MEO_SAVE_TEMPLATE, String );
+static MenuEntry_t ME_SAVE_NEW = MAKE_MENUENTRY( s_NewSaveGame, &MF_SaveSlot, &MEF_LoadSave, &MEO_SAVE_NEW, String );
 static MenuEntry_t *ME_SAVE;
 static MenuEntry_t **MEL_SAVE;
 
@@ -2044,6 +2056,10 @@ void Menu_Init(void)
     MF_Minifont.emptychar.y = tilesiz[MF_Minifont.tilenum].y<<16;
     if (!minitext_lowercase)
         MF_Minifont.textflags |= TEXT_UPPERCASE;
+#ifdef __ANDROID__
+    MF_SaveSlot = MF_Minifont;
+    MF_SaveSlot.zoom = 81920; // 125% of the original slot text size.
+#endif
 
     // prepare gamefuncs and keys
     MEOSN_Gamefuncs[0] = MenuGameFuncNone;
@@ -4827,6 +4843,15 @@ void klistbookends(BUILDVFS_FIND_REC *start)
 
 static void Menu_FileSelectInit(MenuFileSelect_t *object)
 {
+#ifdef __ANDROID__
+    if (object == &M_USERMAP)
+    {
+        static MenuFont_t mapFont;
+        mapFont = MF_Minifont;
+        mapFont.zoom *= 2;
+        object->font[0] = object->font[1] = &mapFont;
+    }
+#endif
     fnlist_clearnames(&object->fnlist);
 
     // important: object->destination stores a reference (e.g. boardfilename)
@@ -7010,6 +7035,13 @@ static MenuEntry_t *Menu_RunInput_Menu_Movement(MenuMenu_t *menu, MenuMovement_t
 
 static void Menu_RunInput_EntryLink_Activate(MenuEntry_t *entry)
 {
+#ifdef __ANDROID__
+    if (entry == &ME_TOUCHLAYOUT)
+    {
+        AndroidOpenControlLayout();
+        return;
+    }
+#endif
     auto link = (MenuLink_t*)entry->entry;
 
     Menu_EntryLinkActivate(entry);
@@ -7503,6 +7535,21 @@ static void Menu_RunInput(Menu_t *cm)
         {
             auto object = (MenuFileSelect_t*)cm->object;
 
+#ifdef __ANDROID__
+            if (object == &M_USERMAP && KB_KeyPressed(sc_BackSpace))
+            {
+                KB_ClearKeyDown(sc_BackSpace);
+                size_t length = Bstrlen(object->destination);
+                if (length > 1 && length + 3 < BMAX_PATH)
+                {
+                    Bstrcat(object->destination, "../");
+                    Bcorrectfilename(object->destination, 1);
+                    Bstrcpy(object->lastdir, object->destination);
+                    Menu_FileSelectInit(object);
+                }
+                break;
+            }
+#endif
             if (I_ReturnTrigger() || Menu_RunInput_MouseReturn())
             {
                 I_ReturnTriggerClear();

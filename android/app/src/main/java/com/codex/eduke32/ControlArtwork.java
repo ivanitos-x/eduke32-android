@@ -9,7 +9,9 @@ import android.graphics.Path;
 final class ControlArtwork {
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Path path;
-    private final Path[] icons=new Path[8];
+    static final int INVENTORY_PREVIOUS = 8, INVENTORY_NEXT = 9, MAP = 10,
+            CONSOLE = 11, PARENT_FOLDER = 12, UP = 13, DOWN = 14, START = 15;
+    private final Path[] icons = new Path[START + 1];
 
     void stick(Canvas c, float x, float y, float r, float ax, float ay, boolean active) {
         p.setStyle(Paint.Style.FILL);
@@ -49,7 +51,7 @@ final class ControlArtwork {
         p.setStrokeWidth(.065f);
         p.setStrokeCap(Paint.Cap.ROUND);
         p.setStrokeJoin(Paint.Join.ROUND);
-        int icon=Math.max(0,Math.min(7,action));
+        int icon=Math.max(0,Math.min(START,action));
         if(icons[icon]==null) {
         path=new Path();
         switch (icon) {
@@ -79,11 +81,6 @@ final class ControlArtwork {
                 poly(c, .19f,.04f, .40f,.31f, .43f,.43f);
                 poly(c, -.02f,-.10f, -.28f,.06f, -.43f,.01f);
                 break;
-            case 4: // Inventory satchel.
-                path.addRoundRect(-.42f,-.23f,.42f,.38f,.07f,.07f,Path.Direction.CW);
-                poly(c, -.18f,-.23f, -.18f,-.43f, .18f,-.43f, .18f,-.23f);
-                line(c, -.41f,.02f,.41f,.02f); line(c, 0,-.06f,0,.12f);
-                break;
             case 5: // Next weapon: pistol and change arrow.
                 poly(c, -.47f,-.30f, .31f,-.30f, .31f,-.10f, -.04f,-.10f,
                      -.13f,.25f, -.36f,.25f, -.28f,-.10f, -.47f,-.10f, -.47f,-.30f);
@@ -94,6 +91,38 @@ final class ControlArtwork {
                 poly(c, -.32f,-.47f, .03f,-.47f, .06f,-.02f, .42f,.17f,
                      .47f,.39f, -.37f,.39f, -.37f,.13f, -.32f,-.47f);
                 line(c,-.35f,.27f,.44f,.27f); line(c,.02f,-.02f,-.14f,.03f);
+                break;
+            case INVENTORY_PREVIOUS:
+                poly(c, .19f,-.49f, -.19f,-.49f, -.19f,.49f, .19f,.49f);
+                break;
+            case INVENTORY_NEXT:
+                poly(c, -.19f,-.49f, .19f,-.49f, .19f,.49f, -.19f,.49f);
+                break;
+            case MAP:
+                poly(c, -.50f,-.28f, -.17f,-.45f, .17f,-.28f, .50f,-.45f,
+                        .50f,.28f, .17f,.45f, -.17f,.28f, -.50f,.45f, -.50f,-.28f);
+                line(c,-.17f,-.45f,-.17f,.28f);
+                line(c,.17f,-.28f,.17f,.45f);
+                break;
+            case CONSOLE:
+                path.addRoundRect(-.51f,-.37f,.51f,.37f,.08f,.08f,Path.Direction.CW);
+                poly(c,-.32f,-.17f,-.10f,0,-.32f,.17f);
+                line(c,.03f,.17f,.32f,.17f);
+                break;
+            case PARENT_FOLDER:
+                poly(c,.48f,.29f,.48f,.04f,.31f,-.12f,-.47f,-.12f,-.20f,-.39f);
+                line(c,-.47f,-.12f,-.20f,.15f);
+                break;
+            case UP:
+                line(c,0,.46f,0,-.46f);
+                poly(c,-.31f,-.15f,0,-.46f,.31f,-.15f);
+                break;
+            case DOWN:
+                line(c,0,-.46f,0,.46f);
+                poly(c,-.31f,.15f,0,.46f,.31f,.15f);
+                break;
+            case START:
+                poly(c,-.30f,-.45f,.45f,0,-.30f,.45f,-.30f,-.45f);
                 break;
             default: // Enter/confirm.
                 poly(c, .36f,-.36f, .36f,.06f, -.38f,.06f, -.13f,-.19f);

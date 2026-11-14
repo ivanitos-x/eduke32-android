@@ -454,6 +454,12 @@ static void cacheExtraTextureMaps(int tileNum, int type)
 
 void G_CacheMapData(void)
 {
+#ifdef __ANDROID__
+    // Android defaults to demand loading. The launcher can restore PC preloading.
+    if (char const *demand = getenv("EDUKE32_DEMAND_IO"))
+        if (demand[0] == '1') return;
+#endif
+
     if (ud.recstat == 2 || !ud.config.useprecache)
         return;
 

@@ -29,6 +29,7 @@ int  CONFIG_ReadSetup(void);
 void CONFIG_WriteSetup(uint32_t flags);
 #ifdef __ANDROID__
 void CONFIG_SaveAndroidTouchSettings(void);
+void CONFIG_LoadAndroidTouchSettings(void);
 #endif
 void CONFIG_ReadSettings(void);
 void CONFIG_SetDefaults(void);

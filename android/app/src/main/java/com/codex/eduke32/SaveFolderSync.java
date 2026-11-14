@@ -13,18 +13,53 @@ import java.util.zip.*;
 /** Versioned, app-owned snapshots in the user-selected game folder (SAF). */
 final class SaveFolderSync {
     private static final ScheduledExecutorService worker=Executors.newSingleThreadScheduledExecutor();
-    private static FileObserver observer;
+    private static final List<FileObserver> observers=new ArrayList<>();
     private static ScheduledFuture<?> pending;
     private static final String PREFIX="eduke32-state-";
     private static final long LIMIT=256L*1024*1024;
 
     private static File profile(Context c,String preset) {
+        File direct=DirectGameStorage.selected(c,GamePreset.fromId(preset));
+        if(direct!=null)return direct;
         return new File(c.getFilesDir(),".config/eduke32"+("bloodcm".equals(preset)?"/presets/bloodcm":""));
     }
     private static boolean allowed(String n) {
         return n.matches("save[0-9A-Za-z_-]*\\.(esv|sav)") || n.equals("settings.cfg")
                 || n.equals("eduke32.cfg") || n.equals("bloodcm-android.cfg")
                 || n.equals("bloodcm-android_settings.cfg") || n.equals("eduke32_settings.cfg");
+    }
+    private static boolean allowed(String preset,String name) { return allowed(name); }
+    private static void collect(File root,File dir,String preset,List<File> out) throws IOException {
+        File[] children=dir.listFiles();if(children==null)return;
+        String prefix=root.getCanonicalPath()+File.separator;
+        for(File file:children) {
+            String relative=file.getAbsolutePath().substring(root.getAbsolutePath().length()+1).replace(File.separatorChar,'/');
+            if(!file.isDirectory() && allowed(preset,relative)) {
+                if(!file.getCanonicalPath().startsWith(prefix))throw new IOException("Link outside save profile");
+                out.add(file);
+            }
+        }
+    }
+    static List<File> previousFiles(Context c,GamePreset p) throws IOException {
+        File root=previousRoot(c,p);
+        List<File> files=new ArrayList<>();
+        if(root.isDirectory())collect(root,root,p.id,files);
+        return files;
+    }
+    static File previousRoot(Context c,GamePreset p) {
+        return new File(c.getFilesDir(),
+                ".config/eduke32"+(p==GamePreset.BLOODCM?"/presets/bloodcm":""));
+    }
+    private static void watch(Context app,String preset,File root,File dir) {
+        FileObserver item=new FileObserver(dir.getAbsolutePath(),FileObserver.CLOSE_WRITE|FileObserver.MOVED_TO|FileObserver.CREATE|FileObserver.DELETE) {
+            @Override public void onEvent(int event,String path) {
+                if(path==null)return;
+                String relative=new File(dir,path).getAbsolutePath().substring(root.getAbsolutePath().length()+1).replace(File.separatorChar,'/');
+                if(allowed(preset,relative))schedule(app,preset);
+            }
+        };
+        observers.add(item);item.startWatching();
+
     }
     private static File location(Context c,String preset) {
         return new File(c.getFilesDir(),"save-folder-"+preset+".properties");
@@ -81,17 +116,14 @@ final class SaveFolderSync {
         return dir;
     }
     static synchronized void start(Context c,String preset) {
-        if(observer!=null)observer.stopWatching();
+        for(FileObserver item:observers)item.stopWatching();observers.clear();
+        if(DirectGameStorage.selected(c,GamePreset.fromId(preset))!=null)return;
         if(!configured(c,preset))return;
         Context app=c.getApplicationContext();File dir=profile(app,preset);dir.mkdirs();
-        observer=new FileObserver(dir.getAbsolutePath(),FileObserver.CLOSE_WRITE|FileObserver.MOVED_TO) {
-            @Override public void onEvent(int event,String path) {
-                if(path!=null && allowed(path))schedule(app,preset);
-            }
-        };
-        observer.startWatching();
+        watch(app,preset,dir,dir);
     }
     static synchronized void schedule(Context c,String preset) {
+        if(DirectGameStorage.selected(c,GamePreset.fromId(preset))!=null)return;
         if(!configured(c,preset))return;
         if(pending!=null)pending.cancel(false);
         Context app=c.getApplicationContext();
@@ -104,10 +136,11 @@ final class SaveFolderSync {
             }
         },800,TimeUnit.MILLISECONDS);
     }
-    private static void snapshot(Context c,String preset) throws Exception {
+    private static synchronized void snapshot(Context c,String preset) throws Exception {
         Uri tree=tree(c,preset);if(tree==null)return;
-        File[] files=profile(c,preset).listFiles((dir,n)->allowed(n));
-        if(files==null || files.length==0)return;
+        File root=profile(c,preset);List<File> files=new ArrayList<>();collect(root,root,preset,files);
+        if(files.isEmpty())return;
+        Map<String,String> before=fingerprint(root,preset);
         File zip=File.createTempFile("save-snapshot-",".zip",c.getCacheDir());
         try {
             long total=0;
@@ -116,12 +149,13 @@ final class SaveFolderSync {
                 for(File file:files)if(file.isFile()) {
                     long size=file.length(),modified=file.lastModified();total+=size;
                     if(total>LIMIT)throw new IOException("Save snapshot exceeds 256 MiB");
-                    out.putNextEntry(new ZipEntry(file.getName()));
+                    out.putNextEntry(new ZipEntry(file.getAbsolutePath().substring(root.getAbsolutePath().length()+1).replace(File.separatorChar,'/')));
                     try(InputStream in=new FileInputStream(file)) { int n;while((n=in.read(buffer))>0)out.write(buffer,0,n); }
                     out.closeEntry();
                     if(file.length()!=size || file.lastModified()!=modified)throw new IOException("File changed during snapshot; retry on next save");
                 }
             }
+            if(!before.equals(fingerprint(root,preset)))throw new IOException("Progress changed during backup; retry after pausing the game");
             Uri folder=storage(c,preset,tree,true);
             String fileName=PREFIX+System.currentTimeMillis()+"-"+UUID.randomUUID()+".zip";
             Uri target=DocumentsContract.createDocument(c.getContentResolver(),folder,"application/zip",fileName);
@@ -144,7 +178,20 @@ final class SaveFolderSync {
             }
         } finally {zip.delete();}
     }
-    static void restore(Context c,String preset) throws Exception {
+    private static Map<String,String> fingerprint(File root,String preset) throws Exception {
+        List<File> files=new ArrayList<>();collect(root,root,preset,files);
+        Map<String,String> result=new TreeMap<>();
+        for(File f:files) {
+            java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
+            try(InputStream in=new FileInputStream(f)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)hash.update(b,0,n);}
+            result.put(f.getAbsolutePath().substring(root.getAbsolutePath().length()+1),android.util.Base64.encodeToString(hash.digest(),android.util.Base64.NO_WRAP));
+        }
+        return result;
+    }
+    static synchronized void restore(Context c,String preset) throws Exception {
+        if(DirectGameStorage.selected(c,GamePreset.fromId(preset))!=null)
+            throw new IOException("Direct folder mode uses the game's own saves; archive restore is disabled");
+
         Uri tree=tree(c,preset);if(tree==null)return;
         Uri folder=storage(c,preset,tree,false);if(folder==null)return;
         List<Uri> all=children(c,tree,DocumentsContract.getDocumentId(folder));
@@ -161,17 +208,25 @@ final class SaveFolderSync {
             try(InputStream raw=c.getContentResolver().openInputStream(latest);ZipInputStream in=new ZipInputStream(raw)) {
                 ZipEntry entry;byte[] buffer=new byte[65536];
                 while((entry=in.getNextEntry())!=null) {
-                    if(++entries>128 || !allowed(entry.getName()))throw new IOException("Invalid save archive entry");
+                    if(++entries>128 || !allowed(preset,entry.getName()))throw new IOException("Invalid save archive entry");
                     File file=new File(staging,entry.getName());
+                    if(!file.getCanonicalPath().startsWith(staging.getCanonicalPath()+File.separator))throw new IOException("Unsafe save path");
+                    File parent=file.getParentFile();if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("Cannot stage save directory");
                     try(OutputStream out=new FileOutputStream(file)) {int n;while((n=in.read(buffer))>0) {total+=n;if(total>LIMIT)throw new IOException("Save archive too large");out.write(buffer,0,n);}}
                     staged.add(file);in.closeEntry();
                 }
             }
-            File dest=profile(c,preset);dest.mkdirs();
+            File dest=profile(c,preset);
+
+            dest.mkdirs();
             for(File file:staged)try(InputStream in=new FileInputStream(file);OutputStream out=new FileOutputStream(new File(dest,file.getName()))) {
                 byte[] buffer=new byte[65536];int n;while((n=in.read(buffer))>0)out.write(buffer,0,n);
             }
             DiagnosticApp.stage("Restored saves/settings from selected game folder");
-        } finally {for(File f:staged)f.delete();File[] remaining=staging.listFiles();if(remaining!=null)for(File f:remaining)f.delete();staging.delete();}
+        } finally {removeStaging(staging);}
+    }
+    private static void removeStaging(File dir) {
+        File[] children=dir.listFiles();if(children!=null)for(File f:children){if(f.isDirectory())removeStaging(f);else f.delete();}
+        dir.delete();
     }
 }

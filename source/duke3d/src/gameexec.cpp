@@ -5195,7 +5195,11 @@ breakfor:
                     if ((unsigned)sectNum >= MAXSECTORS)
                         sectNum = vm.pSprite->sectnum;
 
-                    updatesectorz(vect.x, vect.y, vect.z, &sectNum);
+                    // BloodCM scripts were authored against the legacy sector search.
+                    if (g_bloodCMCompat)
+                        updatesectorz_compat(vect.x, vect.y, vect.z, &sectNum);
+                    else
+                        updatesectorz(vect.x, vect.y, vect.z, &sectNum);
                     Gv_SetVar(returnVar, sectNum);
                     dispatch();
                 }

@@ -1035,6 +1035,85 @@ voxmodel_t *voxload(const char *filnam)
 }
 
 //Draw voxel model as perfect cubes
+#ifdef POLYMER
+bool polymer_voxdraw(voxmodel_t *model, tspriteptr_t tspr, int voxelId)
+{
+    if (!model || model == (voxmodel_t *)-1 || !model->qcnt || !model->vertex || !model->index
+        || (unsigned)tspr->owner >= MAXSPRITES
+        || (tspr->cstat & CSTAT_SPRITE_ALIGNMENT) >= CSTAT_SPRITE_ALIGNMENT_FLOOR)
+        return false;
+
+    auto const &ext = spriteext[tspr->owner];
+    int const pal = tspr->pal;
+    buildgl_activeTexture(GL_TEXTURE0);
+    glClientActiveTexture(GL_TEXTURE0);
+    if (!model->texid[pal])
+        model->texid[pal] = gloadtex(model->mytex, model->mytexx, model->mytexy, model->is8bit, pal);
+    if (!model->texid[pal])
+        return false;
+
+    auto const program = gl.currentShaderProgramID;
+    buildgl_useShaderProgram(0);
+    glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT | GL_TEXTURE_BIT);
+    glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    float const yFlip = (tspr->cstat & 8) ? -1.f : 1.f;
+    float const offsetSign = yFlip < 0.f && (tspr->cstat & CSTAT_SPRITE_ALIGNMENT) != CSTAT_SPRITE_ALIGNMENT_FACING ? -1.f : 1.f;
+    float const worldZ = tspr->z + ext.mdposition_offset.z
+        - tspr->yoffset * tspr->yrepeat * 4.f * model->bscale * offsetSign;
+    glTranslatef(tspr->y + ext.mdposition_offset.y, -worldZ / 16.f,
+                 -(tspr->x + ext.mdposition_offset.x));
+    glRotatef((tspr->ang + ext.mdangoff) * (360.f / 2048.f), 0.f, 1.f, 0.f);
+    float const xy = tspr->xrepeat * model->scale * model->bscale / 4.f;
+    float const z = tspr->yrepeat * model->scale * model->bscale / 4.f;
+    glScalef((tspr->cstat & 4) ? xy : -xy, (tspr->cstat & 8) ? z : -z, xy);
+    glRotatef(-90.f, 1.f, 0.f, 0.f);
+    float anchorZ = model->siz.z * .5f;
+    if (!(tspr->cstat & 128))
+        anchorZ += model->piv.z;
+    else if (!(tspr->clipdist & TSPR_FLAGS_SLAB))
+        anchorZ = model->piv.z;
+    if (yFlip < 0.f)
+        anchorZ = model->siz.z - anchorZ;
+    glTranslatef(-model->piv.x, -model->piv.y, -anchorZ);
+
+    float const shade = 1.f - clamp((tspr->shade * shadescale + model->shadeoff) / numshades, 0.f, 1.f);
+    bool const translucent = (tspr->cstat & CSTAT_SPRITE_TRANSLUCENT)
+        && ((unsigned)voxelId >= MAXVOXELS || !(voxflags[voxelId] & VF_NOTRANS));
+    handle_blend(translucent, tspr->blend, !!(tspr->cstat & CSTAT_SPRITE_TRANSLUCENT_INVERT));
+    float const alpha = translucent ? glblend[tspr->blend].def[!!(tspr->cstat & CSTAT_SPRITE_TRANSLUCENT_INVERT)].alpha : 1.f;
+    glColor4f(shade, shade, shade, alpha * (1.f - ext.alpha));
+    buildgl_setDisabled(GL_CULL_FACE);
+    buildgl_setEnabled(GL_TEXTURE_2D);
+    buildgl_bindTexture(GL_TEXTURE_2D, model->texid[pal]);
+    buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+    buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 5*sizeof(float), model->vertex);
+    glTexCoordPointer(2, GL_FLOAT, 5*sizeof(float), model->vertex + 3);
+    // Attribute errors already pending from earlier GL work to that work,
+    // otherwise a visible voxel can also trigger the sprite fallback.
+    for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; ++i) {}
+    glDrawElements(GL_TRIANGLES, model->qcnt * 6, GL_UNSIGNED_INT, model->index);
+    GLenum const drawError = glGetError();
+    glPopMatrix();
+    glPopClientAttrib();
+    glPopAttrib();
+    buildgl_resetStateAccounting();
+    buildgl_useShaderProgram(program);
+    static uint8_t reported[bitmap_size(MAXTILES)];
+    if (!bitmap_test(reported, tspr->picnum))
+    {
+        bitmap_set(reported, tspr->picnum);
+        LOG_F(INFO, "Polymer voxel draw: tile=%d voxel=%d quads=%d GL error=0x%x",
+              tspr->picnum, voxelId, model->qcnt, (unsigned)drawError);
+    }
+    return drawError == GL_NO_ERROR;
+}
+#endif
+
 int32_t polymost_voxdraw(voxmodel_t *m, tspriteptr_t const tspr)
 {
     // float clut[6] = {1.02,1.02,0.94,1.06,0.98,0.98};
@@ -1208,16 +1287,26 @@ int32_t polymost_voxdraw(voxmodel_t *m, tspriteptr_t const tspr)
     }
 
     glColor4f(pc[0], pc[1], pc[2], pc[3]);
+#ifdef __ANDROID__
+    buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+    glVertexPointer(3, GL_FLOAT, 5*sizeof(float), m->vertex);
+#else
     buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, m->vboindex);
     buildgl_bindBuffer(GL_ARRAY_BUFFER, m->vbo);
 
     glVertexPointer(3, GL_FLOAT, 5*sizeof(float), 0);
+#endif
 
     glClientActiveTexture(GL_TEXTURE0);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+#ifdef __ANDROID__
+    glTexCoordPointer(2, GL_FLOAT, 5*sizeof(float), m->vertex + 3);
+    glDrawElements(GL_TRIANGLES, m->qcnt*2*3, GL_UNSIGNED_INT, m->index);
+#else
     glTexCoordPointer(2, GL_FLOAT, 5*sizeof(float), (GLvoid*) (3*sizeof(float)));
-
     glDrawElements(GL_TRIANGLES, m->qcnt*2*3, GL_UNSIGNED_INT, 0);
+#endif
 
     buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
     buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);

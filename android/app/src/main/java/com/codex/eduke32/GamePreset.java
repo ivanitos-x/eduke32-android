@@ -14,6 +14,7 @@ enum GamePreset {
         this.rendererKey = rendererKey;
     }
     static GamePreset fromId(String id) {
-        return BLOODCM.id.equals(id) ? BLOODCM : DUKE3D;
+        for (GamePreset preset : values()) if (preset.id.equals(id)) return preset;
+        return DUKE3D;
     }
 }

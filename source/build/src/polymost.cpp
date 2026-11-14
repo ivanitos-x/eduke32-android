@@ -576,6 +576,8 @@ void polymost_resetVertexPointers()
 #endif
     buildgl_bindBuffer(GL_ARRAY_BUFFER, drawpolyVertsID);
 
+    // Texture-coordinate pointers belong to the active client texture unit.
+    glClientActiveTexture(GL_TEXTURE0);
     glVertexPointer(3, GL_FLOAT, 5 * sizeof(float), 0);
     glTexCoordPointer(2, GL_FLOAT, 5 * sizeof(float), (GLvoid*)(3 * sizeof(float)));
 
@@ -954,6 +956,13 @@ void polymost_initdrawpoly(void)
 
 void polymost_glinit()
 {
+#ifdef __ANDROID__
+    // Use the RGBA ART path with the Android GL4ES backend.
+    r_useindexedcolortextures = 0;
+    LOG_F(INFO, "Android Polymost: RGBA ART textures enabled");
+    LOG_F(INFO, "Android model state: renderer=%d modelsEnabled=%d loadedModels=%d",
+          (int)glrendmode, usemodels, nextmodelid);
+#endif
     buildgl_resetStateAccounting();
 
     glHint(GL_FOG_HINT, GL_NICEST);
@@ -984,6 +993,7 @@ void polymost_glinit()
 
     buildgl_resetSamplerObjects();
 
+#ifndef __ANDROID__
     vec2_t maxTexDimensions = { tilesheetSize, tilesheetSize };
     char allPacked = false;
     static int numTilesheets = 0;
@@ -1018,6 +1028,7 @@ void polymost_glinit()
     tilepacker_getTile(0, &blankTile);
     buildgl_bindTexture(GL_TEXTURE_2D, tilesheetTexIDs[blankTile.tilesheetID]);
     uploadtextureindexed(false, {(int32_t) blankTile.rect.u, (int32_t) blankTile.rect.v}, {2, 2}, (intptr_t) blankTex);
+#endif
 
     if (!glIsBuffer(quadVertsID))
         glGenBuffers(1, &quadVertsID);
@@ -2116,6 +2127,9 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
     char hasalpha = 0, hasfullbright = 0;
     char npoty = 0;
 
+    // ART colors depend on the active shade and palette tables. The desktop
+    // disk key does not identify those tables or the fullbright-only pass.
+#ifndef __ANDROID__
     texcacheheader cachead;
     char texcacheid[BMAX_PATH];
     {
@@ -2127,7 +2141,6 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
     }
     texcache_calcid(texcacheid, texcacheid, picdim | ((unsigned)dapal<<24u), DAMETH_NARROW_MASKPROPS(dameth) | ((unsigned)dapic<<8u) | ((unsigned)dashade<<24u), tintpalnum);
     int32_t gotcache = texcache_readtexheader(texcacheid, &cachead, 0);
-
     if (gotcache && !texcache_loadtile(&cachead, &doalloc, pth))
     {
         hasalpha = !!(cachead.flags & CACHEAD_HASALPHA);
@@ -2135,6 +2148,7 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
         npoty = !!(cachead.flags & CACHEAD_NPOTWALL);
     }
     else
+#endif
     {
         if (!glinfo.texnpot)
         {
@@ -2290,7 +2304,7 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
     pth->hicr = NULL;
     pth->siz = tsiz;
 
-#if defined USE_GLEXT && !defined EDUKE32_GLES
+#if defined USE_GLEXT && !defined EDUKE32_GLES && !defined __ANDROID__
     if (!gotcache && glinfo.texcompr && glusetexcache && glusetexcompr == 2 && dapic < MAXUSERTILES)
     {
         cachead.quality = 0;
@@ -3156,6 +3170,10 @@ static void polymost_flatskyrender(vec2f_t const* const dpxy, int32_t const n, i
 
 void polymost_startBufferedDrawing(int nn)
 {
+#ifdef __ANDROID__
+    if (!persistentStreamBuffer && videoGetRenderMode() == REND_POLYMOST)
+        return;
+#endif
     if (nn * 5 + drawpolyVertsOffset > (drawpolyVertsSubBufferIndex + 1) * drawpolyVertsBufferLength)
     {
         if (persistentStreamBuffer)
@@ -3206,6 +3224,33 @@ bool polymost_prepareHudClientArrays(void)
 
 void polymost_finishBufferedDrawing(int mode)
 {
+#ifdef __ANDROID__
+    if (!persistentStreamBuffer && videoGetRenderMode() == REND_POLYMOST)
+    {
+        // GL4ES consumes client arrays at draw time. Avoid updating the shared VBO per polygon.
+        buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+        glClientActiveTexture(GL_TEXTURE0);
+        glVertexPointer(3, GL_FLOAT, 5*sizeof(float), drawpolyVerts);
+        glTexCoordPointer(2, GL_FLOAT, 5*sizeof(float), drawpolyVerts+3);
+#ifdef USE_GLEXT
+        if (r_detailmapping)
+        {
+            glClientActiveTexture(GL_TEXTURE3);
+            glTexCoordPointer(2, GL_FLOAT, 5*sizeof(float), drawpolyVerts+3);
+        }
+        if (r_glowmapping)
+        {
+            glClientActiveTexture(GL_TEXTURE4);
+            glTexCoordPointer(2, GL_FLOAT, 5*sizeof(float), drawpolyVerts+3);
+        }
+        glClientActiveTexture(GL_TEXTURE0);
+#endif
+        glDrawArrays(mode, 0, drawpolyVertsCnt);
+        drawpolyVertsCnt = 0;
+        polymost_resetVertexPointers();
+        return;
+    }
+#endif
 #if defined(__ANDROID__) && defined(POLYMER)
     if (pr_hudstream && androidHudSpriteDepth && !persistentStreamBuffer && videoGetRenderMode() == REND_POLYMER)
     {

@@ -28,7 +28,8 @@ public final class GameActivity extends SDLActivity {
     private static final int ACTION_JUMP = 1;
     private static final int ACTION_USE = 2;
     private static final int ACTION_CROUCH = 3;
-    private static final int ACTION_INVENTORY = 4;
+    // Reserved so existing layout slots and native action IDs stay stable.
+    static final int LEGACY_SATCHEL_SLOT = 4;
     private static final int ACTION_NEXT_WEAPON = 5;
     private static final int ACTION_KICK = 6;
     private static final int ACTION_MENU_SELECT = 7;
@@ -47,6 +48,8 @@ public final class GameActivity extends SDLActivity {
     private static native void nativeLookJoystick(float yaw, float pitch);
     private static native void nativeReset();
     private static native int nativeTouchMode();
+    private static native void nativeCustomAction(int action, boolean down);
+    private static native void nativeMapZoom(float scale);
     private boolean blankTapActive;
     private boolean volumeFireEnabled, volumeFireHeld, touchFireHeld, volumeKeyCaptured;
     private void setFireSource(boolean physical, boolean down) {
@@ -109,6 +112,7 @@ public final class GameActivity extends SDLActivity {
 
     @Override protected void onResume() {
         super.onResume();
+        hideGameSystemBars();
         if(mBrokenLibraries) { DiagnosticApp.stage("Game resume: native libraries unavailable");return; }
         DiagnosticApp.stage("Game resumed");
         volumeKeyCaptured=false;
@@ -120,10 +124,15 @@ public final class GameActivity extends SDLActivity {
         mainHandler.post(refreshTouchVisibility);
     }
 
+    public void openControlLayout() {
+        runOnUiThread(() -> {
+            if (!isFinishing()) startActivity(new android.content.Intent(this, ControlLayoutActivity.class));
+        });
+    }
+
     @Override protected void onPause() {
         if(mBrokenLibraries) { super.onPause();return; }
         DiagnosticApp.stage("Game paused");
-        if(!getIntent().getBooleanExtra("emergency_start",false))SaveFolderSync.schedule(this,getIntent().getStringExtra("game_preset"));
         releaseFireSources();volumeKeyCaptured=false;
         mainHandler.removeCallbacks(refreshTouchVisibility);
         blankTapActive = false;
@@ -193,6 +202,7 @@ public final class GameActivity extends SDLActivity {
         }
         DiagnosticApp.stage("Window focus="+hasFocus+" orientation="+getRequestedOrientation());
         super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideGameSystemBars();
         if(mBrokenLibraries)return;
         if(hasFocus) {
             setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
@@ -219,9 +229,9 @@ public final class GameActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle state) {
-        if(!getIntent().getBooleanExtra("emergency_start",false))SaveFolderSync.start(this,getIntent().getStringExtra("game_preset"));
         DiagnosticApp.stage("GameActivity onCreate; emergency="+getIntent().getBooleanExtra("emergency_start",false));
         super.onCreate(state);
+        hideGameSystemBars();
         if(mBrokenLibraries) { DiagnosticApp.stage("SDL initialization stopped: broken native libraries");return; }
         DiagnosticApp.stage("SDL Java initialization complete");
         displayManager = (DisplayManager)getSystemService(Context.DISPLAY_SERVICE);
@@ -248,6 +258,24 @@ public final class GameActivity extends SDLActivity {
         }
     }
 
+    private void hideGameSystemBars() {
+        if (Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            android.view.WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                controller.hide(android.view.WindowInsets.Type.systemBars());
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
+    }
+
     @Override
     protected void onDestroy() {
         if (Build.VERSION.SDK_INT >= 33 && systemBackCallback != null)
@@ -267,8 +295,11 @@ public final class GameActivity extends SDLActivity {
     }
 
     @Override protected String[] getArguments() {
-        return getIntent().getBooleanExtra("emergency_start",false)
-                ? new String[]{"-androidsafe"} : new String[0];
+        java.util.ArrayList<String> args=new java.util.ArrayList<>();
+        if(getIntent().getBooleanExtra("emergency_start",false))args.add("-androidsafe");
+        String[] gameArgs=getIntent().getStringArrayExtra("game_arguments");
+        if(gameArgs!=null)java.util.Collections.addAll(args,gameArgs);
+        return args.toArray(new String[0]);
     }
 
     @Override
@@ -279,6 +310,23 @@ public final class GameActivity extends SDLActivity {
     private static final class TouchControls extends View {
         private static final int LOOK=-2, IDLE=-3, EDGE_BACK=-4, MOVE=-5;
         private static final int BUTTON_COUNT=8;
+        private static final int CUSTOM_BASE=32;
+        private java.util.ArrayList<CustomTouchButtons.Button> customButtons = new java.util.ArrayList<>();
+        private final android.graphics.Paint customPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private static final int TOUCH_GAME = 5, TOUCH_AUTOMAP = 6, TOUCH_CONSOLE = 7, TOUCH_USERMAP = 8;
+        private static final int[] GAME_ICONS = {ControlArtwork.INVENTORY_PREVIOUS,
+                ControlArtwork.INVENTORY_NEXT, ControlArtwork.MAP, ControlArtwork.CONSOLE};
+        private static final int[] MAP_ICONS = {ControlArtwork.PARENT_FOLDER,
+                ControlArtwork.UP, ControlArtwork.DOWN, ControlArtwork.START};
+        private static final int[] CONSOLE_ICONS = {ControlArtwork.CONSOLE};
+        private static final int[] AUTOMAP_ICONS = {ControlArtwork.MAP};
+        private static final int[] GAME_ACTIONS = {13, 14, 15, 16};
+        private static final int[] MAP_ACTIONS = {17, ACTION_MENU_UP, ACTION_MENU_DOWN, ACTION_MENU_SELECT};
+        private static final int[] CONSOLE_ACTIONS = {16};
+        private static final int[] AUTOMAP_ACTIONS = {15};
+        private final android.view.ScaleGestureDetector mapScale;
+        private final SparseArray<Integer> keyPointers = new SparseArray<>();
+        private int inputMode;
         private final SparseArray<Pointer> pointers=new SparseArray<>();
         private final ControlArtwork artwork=new ControlArtwork();
         private final GameActivity activity;
@@ -295,13 +343,24 @@ public final class GameActivity extends SDLActivity {
         }
         TouchControls(GameActivity context) {
             super(context); activity=context;
+            mapScale = new android.view.ScaleGestureDetector(context,
+                    new android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                        @Override public boolean onScale(android.view.ScaleGestureDetector gesture) {
+                            nativeMapZoom(gesture.getScaleFactor());
+                            return true;
+                        }
+                    });
+            mapScale.setQuickScaleEnabled(false);
+            mapScale.setStylusScaleEnabled(false);
             prefs=context.getSharedPreferences("touch_controls",Context.MODE_PRIVATE);
             setVisibility(View.VISIBLE); setWillNotDraw(false); setClickable(true);
         }
         void updateInputMode() {
-            boolean game=nativeTouchMode()==5;
-            if (game!=gameInputMode) {
-                cancelPointers(); activity.releaseFireSources(); gameInputMode=game;
+            int mode = nativeTouchMode();
+            if (mode != inputMode) {
+                cancelPointers();
+                inputMode = mode;
+                gameInputMode = mode == TOUCH_GAME;
                 // Keep the overlay attached to preserve the software SurfaceView.
                 invalidate();
             }
@@ -313,10 +372,12 @@ public final class GameActivity extends SDLActivity {
         }
         private String buttonId(int i) { return i==ACTION_KICK?"kick":i==ACTION_MENU_SELECT?"6":Integer.toString(i); }
         private void loadLayout() {
+            customButtons = CustomTouchButtons.load(activity);
             prefs=activity.getSharedPreferences("touch_controls",Context.MODE_MULTI_PROCESS);
             float[] defaultsX={.87f,.74f,.94f,.68f,.83f,.95f,.80f,.78f};
             float[] defaultsY={.73f,.84f,.53f,.60f,.42f,.34f,.63f,.15f};
             for(int i=0;i<BUTTON_COUNT;i++) {
+                if (i == LEGACY_SATCHEL_SLOT) continue;
                 String id=buttonId(i);
                 xs[i]=getWidth()*prefs.getFloat("x_"+id,defaultsX[i]);
                 ys[i]=getHeight()*prefs.getFloat("y_"+id,defaultsY[i]); sizes[i]=scale(id);
@@ -326,9 +387,24 @@ public final class GameActivity extends SDLActivity {
             moveY=getHeight()*prefs.getFloat("y_dpad",.72f);
             lookRadius=Math.max(64f,Math.min(getWidth(),getHeight())*.14f)*scale("look");
         }
+        private float customRadius(CustomTouchButtons.Button button) {
+            return Math.max(42f, Math.min(getWidth(), getHeight()) * .078f) * button.size;
+        }
+        private void setButton(int role, boolean down) {
+            if (role >= CUSTOM_BASE) nativeCustomAction(customButtons.get(role - CUSTOM_BASE).action, down);
+            else if (role == ACTION_FIRE) activity.setFireSource(false, down);
+            else nativeAction(role, down);
+        }
         private int hitButton(float x,float y) {
+            for (int i = customButtons.size() - 1; i >= 0; i--) {
+                CustomTouchButtons.Button button = customButtons.get(i);
+                float dx = x - button.x * getWidth(), dy = y - button.y * getHeight();
+                float radius = customRadius(button);
+                if (dx * dx + dy * dy <= radius * radius) return CUSTOM_BASE + i;
+            }
             int best=-1; float nearest=Float.MAX_VALUE;
             for(int i=0;i<BUTTON_COUNT;i++) {
+                if (i == LEGACY_SATCHEL_SLOT) continue;
                 float dx=x-xs[i],dy=y-ys[i],distance=dx*dx+dy*dy;
                 float r=buttonRadius(i)*1.15f;
                 if(distance<=r*r && distance<nearest) { best=i; nearest=distance; }
@@ -342,11 +418,11 @@ public final class GameActivity extends SDLActivity {
         private void beginPointer(MotionEvent event,int index) {
             int id=event.getPointerId(index); float x=event.getX(index),y=event.getY(index);
             float edge=28f*getResources().getDisplayMetrics().density;
-            if(x<edge || x>getWidth()-edge) { pointers.put(id,new Pointer(EDGE_BACK,x,y)); return; }
             int button=hitButton(x,y);
+            if(button<0 && (x<edge || x>getWidth()-edge)) { pointers.put(id,new Pointer(EDGE_BACK,x,y)); return; }
             if(button>=0) {
                 boolean active=held(button); pointers.put(id,new Pointer(button,x,y));
-                if(!active) { if(button==ACTION_FIRE) activity.setFireSource(false,true); else nativeAction(button,true); }
+                if(!active) setButton(button, true);
             } else if(x<getWidth()*.40f && !held(MOVE)) {
                 pointers.put(id,new Pointer(MOVE,x,y)); moveX=x; moveY=y;
                 moveAxisX=moveAxisY=0; nativeMove(0,0);
@@ -389,12 +465,13 @@ public final class GameActivity extends SDLActivity {
         private void endPointer(int id) {
             Pointer p=pointers.get(id); if(p==null) return;
             pointers.remove(id);
-            if(p.role>=0 && !held(p.role)) { if(p.role==ACTION_FIRE) activity.setFireSource(false,false); else nativeAction(p.role,false); }
+            if(p.role>=0 && !held(p.role)) setButton(p.role, false);
             if(p.role==MOVE) { moveAxisX=moveAxisY=0; nativeMove(0,0); }
             if(p.role==LOOK) { lookAxisX=lookAxisY=0; nativeLookJoystick(0,0); }
             invalidate();
         }
         private void cancelPointers() {
+            keyPointers.clear();
             for(int i=0;i<pointers.size();i++) {
                 int role=pointers.valueAt(i).role; if(role>=0) { if(role==ACTION_FIRE) activity.setFireSource(false,false); else nativeAction(role,false); }
             }
@@ -405,16 +482,100 @@ public final class GameActivity extends SDLActivity {
         @Override protected void onSizeChanged(int w,int h,int oldw,int oldh) {
             cancelPointers(); loadLayout();
         }
+        private float keyX(int index) {
+            if (inputMode == TOUCH_AUTOMAP) return getWidth() * .37f;
+            if (inputMode == TOUCH_USERMAP)
+                return getWidth() * (index == 0 ? .14f : index == 3 ? .89f : .77f);
+            return getWidth() * (inputMode == TOUCH_CONSOLE ? .91f : .16f + index * .105f);
+        }
+        private float keyY(int index) {
+            if (inputMode == TOUCH_USERMAP)
+                return getHeight() * (index == 1 ? .56f : index == 2 ? .83f : .72f);
+            return getHeight() * (inputMode == TOUCH_CONSOLE ? .59f : .13f);
+        }
+        private float keyRadius() {
+            return Math.min(getWidth(), getHeight()) * .048f;
+        }
+        private int[] keyActions() {
+            return inputMode == TOUCH_USERMAP ? MAP_ACTIONS
+                    : inputMode == TOUCH_AUTOMAP ? AUTOMAP_ACTIONS
+                    : inputMode == TOUCH_CONSOLE ? CONSOLE_ACTIONS : GAME_ACTIONS;
+        }
+        private void drawKeys(Canvas canvas) {
+            int[] icons = inputMode == TOUCH_USERMAP ? MAP_ICONS
+                    : inputMode == TOUCH_AUTOMAP ? AUTOMAP_ICONS
+                    : inputMode == TOUCH_CONSOLE ? CONSOLE_ICONS : GAME_ICONS;
+            int[] actions = keyActions();
+            for (int i = 0; i < icons.length; i++)
+                artwork.button(canvas, keyX(i), keyY(i), keyRadius(), icons[i],
+                        keyPointers.indexOfValue(actions[i]) >= 0);
+        }
+        private boolean handleKeys(MotionEvent event) {
+            int action = event.getActionMasked(), index = event.getActionIndex();
+            int pointer = event.getPointerId(index);
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+                int[] actions = keyActions();
+                float radius = keyRadius();
+                for (int i = 0; i < actions.length; i++) {
+                    float dx = event.getX(index) - keyX(i);
+                    float dy = event.getY(index) - keyY(i);
+                    if (dx * dx + dy * dy <= radius * radius) {
+                        keyPointers.put(pointer, actions[i]);
+                        invalidate();
+                        return true;
+                    }
+                }
+            }
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) {
+                Integer key = keyPointers.get(pointer);
+                if (key != null) {
+                    keyPointers.remove(pointer);
+                    invalidate();
+                    nativeAction(key, true);
+                    activity.mainHandler.postDelayed(() -> nativeAction(key, false), 100);
+                    return true;
+                }
+            }
+            return keyPointers.size() != 0 && inputMode != TOUCH_GAME;
+        }
+
         @Override protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas); if(!gameInputMode) return;
+            super.onDraw(canvas);
+            if (gameInputMode || inputMode == TOUCH_AUTOMAP || inputMode == TOUCH_USERMAP || inputMode == TOUCH_CONSOLE) drawKeys(canvas);
+            if (!gameInputMode) return;
             if(held(MOVE)) artwork.stick(canvas,moveX,moveY,moveRadius,moveAxisX,moveAxisY,true);
             // Only an active touch displays the floating camera stick.
             if(held(LOOK)) artwork.stick(canvas,lookX,lookY,lookRadius,lookAxisX,lookAxisY,true);
-            for(int i=0;i<BUTTON_COUNT;i++) artwork.button(canvas,xs[i],ys[i],buttonRadius(i),i,held(i));
+            for (int i = 0; i < BUTTON_COUNT; i++)
+                if (i != LEGACY_SATCHEL_SLOT) artwork.button(canvas,xs[i],ys[i],buttonRadius(i),i,held(i));
+            for (int i = 0; i < customButtons.size(); i++) {
+                CustomTouchButtons.Button button = customButtons.get(i);
+                CustomTouchButtons.draw(canvas, customPaint, button, button.x * getWidth(),
+                        button.y * getHeight(), customRadius(button), held(CUSTOM_BASE + i));
+            }
         }
         @Override public boolean onTouchEvent(MotionEvent event) {
-            if(nativeTouchMode()!=5) {
-                updateInputMode(); return mSurface!=null && mSurface.dispatchTouchEvent(event);
+            updateInputMode();
+            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL && gameInputMode) {
+                cancelPointers();
+                return true;
+            }
+            if (event.getPointerCount() == 0) return false;
+            if (inputMode == TOUCH_AUTOMAP) {
+                mapScale.onTouchEvent(event);
+                if (event.getPointerCount() > 1 || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                    if (keyPointers.size() != 0) {
+                        keyPointers.clear();
+                        invalidate();
+                    }
+                } else {
+                    handleKeys(event);
+                }
+                return true;
+            }
+            if ((gameInputMode || inputMode == TOUCH_USERMAP || inputMode == TOUCH_CONSOLE) && handleKeys(event))
+                return true;
+            if (!gameInputMode) { return mSurface!=null && mSurface.dispatchTouchEvent(event);
             }
             int action=event.getActionMasked(),index=event.getActionIndex();
             if(action==MotionEvent.ACTION_DOWN || action==MotionEvent.ACTION_POINTER_DOWN) beginPointer(event,index);

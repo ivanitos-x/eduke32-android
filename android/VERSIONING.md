@@ -1,5 +1,38 @@
 # Android app versions
 
+## 0.5.1 (code 45)
+
+- AMC Android Polymost uses its existing RGBA ART path. A live console comparison
+  isolated black output to the indexed-texture path through GL4ES; disabling that
+  path immediately restored the menu, without switching to Classic.
+- Do not allocate unused indexed atlases when indexed textures are disabled.
+  Bound any future Android indexed pages to 2048, with standalone fallback for
+  oversized tiles. Avoid mipmapped minification for level-zero indexed textures.
+- Use synchronous client vertex arrays for non-persistent Android AMC drawing,
+  restoring Polymost's vertex bindings after each draw. Batch the ordinary 16x16
+  menu background into a repeated quad. No game data or GL4ES vendor edits.
+- Diagnostic builds and final build passed Gradle. Installed over existing data
+  after force-stop. Final phone log entered E1L1 THE AMC TEAM and E1L2 AMC BASE;
+  screenshot shows a rendered level, and the user confirmed the game works.
+- Menu process TOTAL PSS measured 735888 KiB after the fix, compared with
+  1977088 KiB in an earlier black-screen run. These are separate live samples,
+  not controlled peak-memory benchmarks or guarantees for all maps.
+- Remaining: indexed-path compatibility is disabled, not repaired; full campaign,
+  backup/restore and cross-device validation remain open. AMC emitted a save
+  thumbnail capture error when EVENT_DISPLAYROOMS returned 1; this does not by
+  itself prove save corruption. Stable 0.4.1 remains separate.
+
+## 0.5 (code 44)
+
+- Add an AMC Squad 5.2.2 preset using a separate native library built from
+  AMCDuke32 revision d6a40c3620964982d18e549abd4bdc49d8cbada6.
+- Keep game resources separate from the writable AMC profile. Seed campaign
+  DATA and config Gamevars on first launch without overwriting existing progress.
+- Preserve campaign Gamevars when resetting settings. Use a separate emergency profile.
+- Include nested campaign DATA and savegames in snapshots; retain the previous
+  AMC profile when committing a restored backup.
+- Android build and device validation are in progress; support is not yet verified.
+
 The version is maintained in `version.properties` using semantic `VERSION_NAME`
 and a monotonically increasing `VERSION_CODE`. Increase the code for every
 APK distributed for installation; update the name according to the change:
@@ -239,3 +272,39 @@ unnumbered `0.1-test` build.
 - Android Classic obtains current window surface, defers portrait/background output, and checks destination dimensions before blitting. Reacquire software surface after mode changes even when binary has USE_OPENGL compiled but nogl is active.
 - Resize no longer invokes GL viewport functions for Classic. Preserve 0.4.10 square-pixel frame sizing and 0.4.11 controller fix.
 - Gradle succeeded, APK saved and installed after user saved progress. End-to-end power-menu/Gemini/volume-chord verification pending user test. No automated physical system chord reproduction claimed.
+
+
+## 0.6.2 / 48
+
+Replaced the Polymer toggle with a Classic / Polymost / Polymer selector.
+Selections are stored per game preset; old Polymer preferences are retained
+as the migration fallback. Classic uses 8-bit software rendering; Polymost
+and Polymer use a 32-bit output configuration with Polymer=0/1 respectively.
+Android bootstrap enables OpenGL based on ScreenBPP, allowing Polymost.
+APK builds successfully; device rendering checks remain pending (disconnected).
+
+
+## 0.6.3 / 49
+
+Import a single EDuke32 invocation from a selected PC .bat/.cmd in the direct
+working folder. This fixes missing Imperium/DukePlus command-line options.
+See PC_LAUNCH.md for supported syntax and validation scope.
+
+## 0.6.9 (code 55), Polymost diagnostic builds
+
+These APKs were built with the same embedded version and code. The artifact
+names distinguish the builds. For future APKs distributed for installation,
+increment the code as specified above.
+
+- `EDuke32-polymost-rgba.apk`: use RGBA for Android Polymost ART textures.
+- `EDuke32-polymost-update-timing.apk`: add timing diagnostics for slow frames.
+- `EDuke32-polymost-client-arrays.apk`: use client vertex arrays for the
+  non-persistent Android Polymost draw path.
+- `EDuke32-polymost-art-cache.apk`: bypass the disk texture cache for ART.
+- `EDuke32-polymost-uv.apk`: select client texture unit 0 before restoring
+  the default UV pointer. Gradle build succeeded and the APK was installed.
+  SHA-256: `1d731743f993203a4c9e3f2515b444f6d47a78dd1ea62a30381da06c3d648d06`.
+
+The intermittent enemy texture glitch remains open. The user observed that
+opening the notification shade or returning to the game clears the glitch.
+A device log confirms that a resume rebuilt the renderer resources.

@@ -75,6 +75,7 @@ static std::atomic<uint64_t> androidStickyButtons { 0 };
 static std::atomic<int> androidPublishedTouchMode { TOUCH_SCREEN_BLANK_TAP };
 static std::atomic<double> lookYawJoystickTarget { 0.0 }, lookPitchJoystickTarget { 0.0 };
 static std::atomic<double> androidPendingYaw { 0.0 }, androidPendingPitch { 0.0 };
+static std::atomic<double> androidPendingMapZoom { 0.0 };
 static std::atomic<bool> androidLookResetPending { false };
 static std::atomic<uint32_t> androidMoveAxes { 0 };
 
@@ -116,6 +117,19 @@ static void AndroidAccumulateLook(std::atomic<double> &target, double delta)
     while (!target.compare_exchange_weak(previous, previous + delta, std::memory_order_relaxed)) { }
 }
 
+void AndroidMapZoom(float scale)
+{
+    if (scale > 0.f && std::isfinite(scale))
+        AndroidAccumulateLook(androidPendingMapZoom, log(clamp(scale, .5f, 2.f)));
+}
+
+void AndroidApplyMapZoom(uint16_t *zoom)
+{
+    double const delta = androidPendingMapZoom.exchange(0.0, std::memory_order_relaxed);
+    if (delta != 0.0)
+        *zoom = (uint16_t)lrint(clamp(*zoom * exp(clamp(delta, -4.0, 4.0)), 48.0, 2048.0));
+}
+
 uint64_t AndroidHeldButtons(void)
 {
     return androidHeldButtons.load();
@@ -130,6 +144,7 @@ void AndroidResetButtons(void)
     lookPitchJoystickTarget.store(0.0, std::memory_order_relaxed);
     androidPendingYaw.store(0.0, std::memory_order_relaxed);
     androidPendingPitch.store(0.0, std::memory_order_relaxed);
+    androidPendingMapZoom.store(0.0, std::memory_order_relaxed);
     androidLookResetPending.store(true, std::memory_order_relaxed);
 }
 
@@ -339,14 +354,14 @@ int32_t AndroidRead(portableread_t r)
             rv = TOUCH_SCREEN_BLANK_TAP;
         else if (consoleShown)
             rv = TOUCH_SCREEN_CONSOLE;
+        else if ((g_player[myconnectindex].ps->gm & MODE_MENU) && (g_currentMenu == MENU_USERMAP || g_currentMenu == MENU_NETUSERMAP))
+            rv = TOUCH_SCREEN_USERMAP;
         else if ((g_player[myconnectindex].ps->gm & MODE_MENU) == MODE_MENU && g_currentMenu != MENU_MAIN)
             rv = (m_currentMenu && m_currentMenu->type == Verify && totalclock > (m_animation.length + m_animation.start)) ? TOUCH_SCREEN_YES_NO : TOUCH_SCREEN_MENU;
         else if ((g_player[myconnectindex].ps->gm & MODE_MENU) == MODE_MENU && g_currentMenu == MENU_MAIN)
             rv = TOUCH_SCREEN_MENU_NOBACK;
-/*
-        else if (ud.overhead_on == 2)
+        else if (ud.overhead_on && (g_player[myconnectindex].ps->gm & MODE_GAME))
             rv = TOUCH_SCREEN_AUTOMAP;
-*/
         else if ((g_player[myconnectindex].ps->gm & MODE_GAME))
             if (AndroidRead(R_PLAYER_DEAD_FLAG))
                 rv = TOUCH_SCREEN_BLANK_TAP;

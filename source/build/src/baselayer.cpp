@@ -251,7 +251,15 @@ void engineSetLogFile(const char* fn, loguru::Verbosity verbosity /*= LOG_ENGINE
     loguru::g_stderr_verbosity = verbosity;
     loguru::remove_callback(CB_ENGINE);
     loguru::add_callback(CB_ENGINE, engineLogCallback, nullptr, verbosity);
+#if defined(__ANDROID__)
+# if defined(EDUKE32_DISABLE_VERBOSE_FILE_LOG)
+    loguru::add_file(fn, mode, loguru::Verbosity_INFO);
+# else
+    loguru::add_file(fn, mode, loguru::Verbosity_MAX);
+# endif
+#else
     loguru::add_file(fn, mode, verbosity);
+#endif
 }
 
 void (*keypresscallback)(int32_t, int32_t);

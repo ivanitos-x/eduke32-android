@@ -6194,7 +6194,7 @@ static void G_HandleMemErr(int32_t bytes, int32_t lineNum, const char *fileName,
 
 static void G_FatalEngineInitError(void)
 {
-#ifdef DEBUGGINGAIDS
+#if defined(DEBUGGINGAIDS) && !defined(__ANDROID__)
     debug_break();
 #endif
     G_Cleanup();
@@ -6495,7 +6495,14 @@ void drawframe_do(void)
 
     int const smoothratio = calc_smoothratio(totalclock, ototalclock);
 
+#ifdef __ANDROID__
+    uint64_t const roomsStart = timerGetNanoTicks();
+#endif
     G_DrawRooms(screenpeek, smoothratio);
+#ifdef __ANDROID__
+    uint64_t const roomsEnd = timerGetNanoTicks();
+    int const renderSprites = spritesortcnt;
+#endif
 
     if (videoGetRenderMode() >= REND_POLYMOST)
         G_DrawBackground();
@@ -6516,6 +6523,27 @@ void drawframe_do(void)
     } else AndroidClosePerformanceSession();
 #endif
     videoNextPage();
+#ifdef __ANDROID__
+    uint64_t const presentEnd = timerGetNanoTicks();
+    uint64_t const tickRate = timerGetNanoTickRate();
+    static uint64_t lastFrameDiagnostic;
+    static uint64_t previousPresent;
+    uint64_t const frameInterval = previousPresent ? presentEnd - previousPresent : 0;
+    previousPresent = presentEnd;
+    if ((g_player[myconnectindex].ps->gm & (MODE_GAME | MODE_MENU)) == MODE_GAME
+        && (presentEnd - g_lastFrameStartTime >= tickRate / 10 || frameInterval >= tickRate / 10)
+        && presentEnd - lastFrameDiagnostic >= tickRate)
+    {
+        lastFrameDiagnostic = presentEnd;
+        auto const milliseconds = [tickRate](uint64_t ticks) { return 1000.0 * ticks / tickRate; };
+        LOG_F(INFO, "Android slow frame: renderer=%d buffer=%dx%d bpp=%d map sectors=%d walls=%d sprites=%d playerSector=%d renderSprites=%d "
+                    "interval=%.1fms update=%.1fms input=%.1fms rooms=%.1fms rest=%.1fms present=%.1fms",
+              (int)videoGetRenderMode(), xdim, ydim, bpp, numsectors, numwalls, Numsprites,
+              g_player[screenpeek].ps->cursectnum, renderSprites, milliseconds(frameInterval), g_gameUpdateTime,
+              milliseconds(roomsStart - g_lastFrameStartTime), milliseconds(roomsEnd - roomsStart),
+              milliseconds(g_lastFrameEndTime - roomsEnd), milliseconds(presentEnd - g_lastFrameEndTime));
+    }
+#endif
     S_Update();
     g_lastFrameEndTime2 = timerGetNanoTicks();
     g_lastFrameDuration2 = g_lastFrameEndTime2 - g_lastFrameStartTime;
@@ -6921,6 +6949,9 @@ int app_main(int argc, char const* const* argv)
     CONFIG_ReadSettings();
 
     OSD_Exec("autoexec.cfg");
+#ifdef __ANDROID__
+    CONFIG_LoadAndroidTouchSettings();
+#endif
 
     CONFIG_SetDefaultKeys(keydefaults, true);
 

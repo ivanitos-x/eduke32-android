@@ -48,6 +48,6 @@ target_include_directories(main PRIVATE
     "${EDUKE_ROOT}/source/glad/include"
     "${EDUKE_ROOT}/source/voidwrap/include"
     "${CMAKE_CURRENT_LIST_DIR}/../../third_party/gl4es/include")
-target_compile_definitions(main PRIVATE RENDERTYPESDL=1 SDL_TARGET=2 USE_OPENGL=1 POLYMER=1 IMGUI_IMPL_OPENGL_ES2=1 NOASM=1 NETCODE_DISABLE DEBUGGINGAIDS=0 EDUKE32_ANDROID_MENU=1 EDUKE32_TOUCH_DEVICES=1)
+target_compile_definitions(main PRIVATE RENDERTYPESDL=1 SDL_TARGET=2 USE_OPENGL=1 POLYMER=1 HAVE_VORBIS=1 IMGUI_IMPL_OPENGL_ES2=1 NOASM=1 NETCODE_DISABLE DEBUGGINGAIDS=0 EDUKE32_ANDROID_MENU=1 EDUKE32_TOUCH_DEVICES=1)
 target_compile_options(main PRIVATE -funsigned-char -fno-strict-aliasing -fexceptions)
 target_link_libraries(main PRIVATE SDL2 GL log android dl EGL GLESv2 m)

@@ -540,6 +540,12 @@ int32_t S_LoadSound(int num)
 
 void cacheAllSounds(void)
 {
+#ifdef __ANDROID__
+    // Android defaults to demand loading. The launcher can restore PC preloading.
+    if (char const *demand = getenv("EDUKE32_DEMAND_IO"))
+        if (demand[0] == '1') return;
+#endif
+
     if (!g_sounds)
         return;
 

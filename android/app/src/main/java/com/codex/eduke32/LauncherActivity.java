@@ -40,9 +40,13 @@ public final class LauncherActivity extends Activity {
     private File gameData;
     private File gameDirMarker;
     private GamePreset preset;
+    private GamePreset pendingDirectPreset;
+    private static volatile boolean progressImportRunning;
 
     private File baseConfigDir() { return new File(getFilesDir(), ".config/eduke32"); }
     private File presetConfigDir() {
+        File direct=DirectGameStorage.selected(this,preset);
+        if(direct!=null)return direct;
         return preset == GamePreset.BLOODCM
                 ? new File(baseConfigDir(), "presets/bloodcm") : baseConfigDir();
     }
@@ -70,16 +74,32 @@ public final class LauncherActivity extends Activity {
         caption.setTextSize(13);
         caption.setPadding(0,(int)(6*density),0,(int)(16*density));
         panel.addView(caption,new LinearLayout.LayoutParams(-1,-2));
+        org.json.JSONObject presets = customPresets();
+        String activeId = activeCustomPreset(presets);
         for (GamePreset option : GamePreset.values()) {
-            boolean selected = option == preset;
+            boolean selected = option == preset && activeId.isEmpty();
             String detail = option == GamePreset.BLOODCM ? "Blood Crossmatching" : "Original game & Duke mods";
             addLauncherAction(panel, selected ? "✓" : option == GamePreset.BLOODCM ? "BCM" : "D3D",
                     option.title, selected ? "Selected · " + detail : detail, () -> {
-                        getSharedPreferences("launcher_settings",MODE_PRIVATE).edit()
-                                .putString("game_preset",option.id).apply();
+                        if (!selectBuiltInPreset(option)) return;
                         dialog.dismiss();
                         showLauncher();
                     }, selected ? 0xFF153049 : 0xFF1A222D,0xFFF4F6F8,0xFFADB5C0,0xFF70B3FF,density);
+        }
+        addLauncherAction(panel, "+", "Save as preset", "Save the current game folder and launch script",
+                () -> { dialog.dismiss(); nameCustomPreset(null); },
+                0xFF1A222D,0xFFF4F6F8,0xFFADB5C0,0xFF70B3FF,density);
+        for (java.util.Iterator<String> ids = presets.keys(); ids.hasNext();) {
+            String id = ids.next();
+            org.json.JSONObject entry = presets.optJSONObject(id);
+            if (entry == null) continue;
+            boolean selected = id.equals(activeId);
+            String detail = entry.optString("batch");
+            if (selected) detail = detail.isEmpty() ? "Selected" : "Selected · " + detail;
+            View card = addLauncherAction(panel, selected ? "✓" : "MOD", entry.optString("name"), detail,
+                    () -> { if (selectCustomPreset(id, entry)) dialog.dismiss(); },
+                    selected ? 0xFF153049 : 0xFF1A222D,0xFFF4F6F8,0xFFADB5C0,0xFF70B3FF,density);
+            card.setOnLongClickListener(view -> { dialog.dismiss(); manageCustomPreset(id, entry); return true; });
         }
         Button close = new Button(this);
         close.setText("Close");
@@ -124,22 +144,259 @@ public final class LauncherActivity extends Activity {
         return grp != null && grp.isFile() && grp.length() > 16 && con != null && con.isFile();
     }
 
-    private void launchPreset(boolean polymer) { launchPreset(polymer,false); }
-
-    private void launchPreset(boolean polymer, boolean emergency) {
-        DiagnosticApp.stage("Launch requested: preset="+preset.id+" polymer="+polymer+" emergency="+emergency);
+    private org.json.JSONObject customPresets() {
         try {
-            File base = baseConfigDir();
-            if (!base.isDirectory() && !base.mkdirs()) throw new java.io.IOException("Cannot create config folder");
-            try (FileOutputStream output = new FileOutputStream(new File(base, "android-game-preset.txt"))) {
-                output.write(preset.id.getBytes(StandardCharsets.UTF_8));
-            }
-            if (!emergency && !writeRendererConfig(polymer)) throw new java.io.IOException("Could not save renderer settings");
-        } catch (Exception error) {
-            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            return new org.json.JSONObject(getSharedPreferences("launcher_settings", MODE_PRIVATE)
+                    .getString("custom_presets", "{}"));
+        } catch (org.json.JSONException error) {
+            return new org.json.JSONObject();
+        }
+    }
+
+    private void saveCustomPresets(org.json.JSONObject entries) {
+        getSharedPreferences("launcher_settings", MODE_PRIVATE).edit()
+                .putString("custom_presets", entries.toString()).apply();
+    }
+
+    private void nameCustomPreset(String existingId) {
+        org.json.JSONObject entries = customPresets();
+        org.json.JSONObject existing = existingId == null ? null : entries.optJSONObject(existingId);
+        File folder = DirectGameStorage.selected(this, preset);
+        if (existing == null && folder == null) {
+            Toast.makeText(this, "Select a game folder first", Toast.LENGTH_LONG).show();
             return;
         }
-        String signature = preset.id + ":" + polymer + ":" + readGameDir() + ":safe=" + emergency;
+        String gameId = preset.id;
+        String batch = getSharedPreferences("launcher_settings", MODE_PRIVATE).getString(gameId + "_batch", "");
+        android.widget.EditText name = new android.widget.EditText(this);
+        name.setSingleLine(true);
+        name.setText(existing == null ? folder.getName() : existing.optString("name"));
+        LinearLayout panel = presetDialogContent(existing == null ? "Save as preset" : "Rename preset");
+        name.setTextColor(0xFFF4F6F8);
+        name.setBackgroundTintList(ColorStateList.valueOf(0xFF70B3FF));
+        panel.addView(name, new LinearLayout.LayoutParams(-1, -2));
+        android.app.Dialog prompt = showPresetDialog(panel);
+        presetAction(panel, "✓", "Save", "", () -> {
+            String title = name.getText().toString().trim();
+            if (title.isEmpty()) {
+                name.setError("Enter a preset name");
+                return;
+            }
+            try {
+                org.json.JSONObject entry = existing == null ? new org.json.JSONObject() : existing;
+                if (existing == null) {
+                    entry.put("game", gameId);
+                    entry.put("folder", folder.getAbsolutePath());
+                    entry.put("batch", batch);
+                }
+                entry.put("name", title);
+                entries.put(existing == null ? java.util.UUID.randomUUID().toString() : existingId, entry);
+                saveCustomPresets(entries);
+                prompt.dismiss();
+                choosePreset();
+            } catch (org.json.JSONException error) {
+                Toast.makeText(this, "Could not save preset", Toast.LENGTH_LONG).show();
+            }
+        });
+        presetAction(panel, "‹", "Cancel", "", () -> { prompt.dismiss(); choosePreset(); });
+    }
+
+    private LinearLayout presetDialogContent(String title) {
+        float density = getResources().getDisplayMetrics().density;
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int inset = (int)(20 * density);
+        panel.setPadding(inset, inset, inset, inset);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(0xFF101216);
+        shape.setCornerRadius(24 * density);
+        panel.setBackground(shape);
+        TextView heading = new TextView(this);
+        heading.setText(title);
+        heading.setTextColor(0xFFF4F6F8);
+        heading.setTextSize(23);
+        panel.addView(heading);
+        return panel;
+    }
+
+    private android.app.Dialog showPresetDialog(LinearLayout panel) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setContentView(panel);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawableResource(android.R.color.transparent);
+            window.setLayout((int)(getResources().getDisplayMetrics().widthPixels * .86f), -2);
+        }
+        return dialog;
+    }
+
+    private View presetAction(LinearLayout panel, String icon, String title, String description, Runnable action) {
+        return addLauncherAction(panel, icon, title, description, action,
+                0xFF1A222D, 0xFFF4F6F8, 0xFFADB5C0, 0xFF70B3FF,
+                getResources().getDisplayMetrics().density);
+    }
+
+    private void manageCustomPreset(String id, org.json.JSONObject entry) {
+        LinearLayout panel = presetDialogContent(entry.optString("name"));
+        android.app.Dialog dialog = showPresetDialog(panel);
+        presetAction(panel, "TXT", "Rename", "Change the preset name", () -> {
+            dialog.dismiss();
+            nameCustomPreset(id);
+        });
+        presetAction(panel, "×", "Delete", "Remove the preset from the launcher", () -> {
+            dialog.dismiss();
+            LinearLayout confirm = presetDialogContent("Delete " + entry.optString("name") + "?");
+            android.app.Dialog confirmation = showPresetDialog(confirm);
+            presetAction(confirm, "×", "Delete", "Game files stay on the phone", () -> {
+                org.json.JSONObject entries = customPresets();
+                entries.remove(id);
+                saveCustomPresets(entries);
+                confirmation.dismiss();
+                choosePreset();
+            });
+            presetAction(confirm, "‹", "Cancel", "", () -> { confirmation.dismiss(); choosePreset(); });
+        });
+        presetAction(panel, "‹", "Close", "", () -> { dialog.dismiss(); choosePreset(); });
+    }
+
+    private String activeCustomPreset(org.json.JSONObject presets) {
+        android.content.SharedPreferences settings = getSharedPreferences("launcher_settings", MODE_PRIVATE);
+        String savedId = settings.getString("active_custom_preset", null);
+        if ("".equals(savedId)) return "";
+        File folder = DirectGameStorage.selected(this, preset);
+        if (folder == null) return "";
+        String batch = settings.getString(preset.id + "_batch", "");
+        for (java.util.Iterator<String> ids = presets.keys(); ids.hasNext();) {
+            String id = ids.next();
+            if (savedId != null && !savedId.equals(id)) continue;
+            org.json.JSONObject entry = presets.optJSONObject(id);
+            if (entry != null && preset.id.equals(entry.optString("game"))
+                    && folder.equals(new File(entry.optString("folder")))
+                    && batch.equals(entry.optString("batch"))) return id;
+        }
+        return "";
+    }
+
+    private boolean selectCustomPreset(String id, org.json.JSONObject entry) {
+        try {
+            GamePreset base = GamePreset.fromId(entry.getString("game"));
+            File folder = new File(entry.getString("folder"));
+            String batch = entry.optString("batch");
+            if (!batch.isEmpty() && (!batch.equals(new File(batch).getName()) || !new File(folder, batch).isFile()))
+                throw new java.io.IOException("The saved launch script is missing");
+            DirectGameStorage.checkWritable(folder);
+            rememberBuiltInPreset(base);
+            DirectGameStorage.bind(this, base, folder);
+            getSharedPreferences("launcher_settings", MODE_PRIVATE).edit()
+                    .putString("game_preset", base.id).putString(base.id + "_batch", batch)
+                    .putString("active_custom_preset", id).apply();
+            showLauncher();
+            return true;
+        } catch (java.io.IOException | org.json.JSONException error) {
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            return false;
+        }
+    }
+
+    private void rememberBuiltInPreset(GamePreset base) {
+        android.content.SharedPreferences settings = getSharedPreferences("launcher_settings", MODE_PRIVATE);
+        String key = base.id + "_builtin_folder";
+        if (settings.contains(key)) return;
+        File current = DirectGameStorage.selected(this, base);
+        String batch = settings.getString(base.id + "_batch", "");
+        org.json.JSONObject presets = customPresets();
+        for (java.util.Iterator<String> ids = presets.keys(); current != null && ids.hasNext();) {
+            org.json.JSONObject entry = presets.optJSONObject(ids.next());
+            if (entry != null && base.id.equals(entry.optString("game"))
+                    && current.equals(new File(entry.optString("folder")))
+                    && batch.equals(entry.optString("batch"))) {
+                current = null;
+                batch = "";
+            }
+        }
+        settings.edit().putString(key, current == null ? "" : current.getAbsolutePath())
+                .putString(base.id + "_builtin_batch", current == null ? "" : batch).apply();
+    }
+
+    private boolean selectBuiltInPreset(GamePreset base) {
+        try {
+            rememberBuiltInPreset(base);
+            android.content.SharedPreferences settings = getSharedPreferences("launcher_settings", MODE_PRIVATE);
+            String folder = settings.getString(base.id + "_builtin_folder", "");
+            File marker = DirectGameStorage.marker(this, base);
+            if (!folder.isEmpty()) DirectGameStorage.bind(this, base, new File(folder));
+            else if (marker.exists() && !marker.delete()) throw new java.io.IOException("Cannot clear the mod folder");
+            settings.edit().putString("game_preset", base.id).putString("active_custom_preset", "")
+                    .putString(base.id + "_batch", settings.getString(base.id + "_builtin_batch", "")).apply();
+            return true;
+        } catch (java.io.IOException error) {
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            return false;
+        }
+    }
+
+    private String[] selectedBatchArguments() throws java.io.IOException {
+        String name=getSharedPreferences("launcher_settings",MODE_PRIVATE).getString(preset.id+"_batch","");
+        if(name.isEmpty())return new String[0];
+        File root=DirectGameStorage.selected(this,preset);
+        if(root==null)throw new java.io.IOException("Batch launch requires a direct working folder");
+        if(name.contains("/")||name.contains("\\"))throw new java.io.IOException("Invalid batch filename");
+        File file=new File(root,name);
+        File[] available = listBatchScripts(root);
+        if (available != null && available.length == 0) return new String[0];
+        if(!file.isFile()||file.length()>65536)throw new java.io.IOException("Selected batch is missing or too large; select its file again");
+        return BatchLaunch.parse(StorageText.read(file));
+    }
+    private static File[] listBatchScripts(File root) {
+        if (root == null) return null;
+        return root.listFiles(file -> {
+            String name = file.getName().toLowerCase(Locale.ROOT);
+            return file.isFile() && (name.endsWith(".bat") || name.endsWith(".cmd"));
+        });
+    }
+
+    private void chooseBatch() {
+        File root=DirectGameStorage.selected(this,preset);
+        if(root==null) {Toast.makeText(this,"Choose a direct working folder first",Toast.LENGTH_LONG).show();return;}
+        File[] files=listBatchScripts(root);
+        if(files==null) {Toast.makeText(this,"Cannot read working folder",Toast.LENGTH_LONG).show();return;}
+        java.util.Arrays.sort(files,(a,b)->a.getName().compareToIgnoreCase(b.getName()));
+        String[] choices=new String[files.length+1];choices[0]="None - normal launch";
+        for(int i=0;i<files.length;i++)choices[i+1]=files[i].getName();
+        showLauncherChoices("PC launch script", choices, -1, which -> {
+                    try {
+                        String name=which==0?"":files[which-1].getName();
+                        String[] args=which==0?new String[0]:BatchLaunch.parse(StorageText.read(files[which-1]));
+                        android.content.SharedPreferences.Editor editor=getSharedPreferences("launcher_settings",MODE_PRIVATE).edit().putString(preset.id+"_batch",name);
+                        android.content.SharedPreferences state = getSharedPreferences("launcher_settings", MODE_PRIVATE);
+                        if ("".equals(state.getString("active_custom_preset", "")))
+                            editor.putString(preset.id + "_builtin_batch", name);
+                        for(String arg:args)if(arg.equalsIgnoreCase("-forcegl")&&selectedRenderer()==RendererMode.CLASSIC)
+                            editor.putString(preset.rendererKey+"_mode",RendererMode.POLYMOST.id);
+                        editor.apply();showLauncher();
+                    } catch(Exception error) {Toast.makeText(this,error.getMessage(),Toast.LENGTH_LONG).show();}
+                });
+    }
+
+    private RendererMode selectedRenderer() {
+        android.content.SharedPreferences settings=getSharedPreferences("launcher_settings",MODE_PRIVATE);
+        String key=preset.rendererKey+"_mode";
+        return settings.contains(key)?RendererMode.fromId(settings.getString(key,"classic"))
+                :(settings.getBoolean(preset.rendererKey,false)?RendererMode.POLYMER:RendererMode.CLASSIC);
+    }
+    private void launchPreset(RendererMode renderer) { launchPreset(renderer,false); }
+
+    private void launchPreset(RendererMode renderer, boolean emergency) {
+        if(progressImportRunning) {Toast.makeText(this,"Wait for progress import to finish",Toast.LENGTH_LONG).show();return;}
+        final String[] batchArguments;
+        try {batchArguments=emergency?new String[0]:selectedBatchArguments();}
+        catch(Exception error) {Toast.makeText(this,error.getMessage(),Toast.LENGTH_LONG).show();return;}
+        DiagnosticApp.stage("Launch requested: preset="+preset.id+" renderer="+renderer.id+" emergency="+emergency);
+        String signature = preset.id + ":" + renderer.id + ":" + readGameDir() + ":safe=" + emergency
+                + ":batch=" + java.util.Arrays.toString(batchArguments)
+                + ":direct=" + (DirectGameStorage.selected(this,preset)!=null);
         android.content.SharedPreferences settings = getSharedPreferences("launcher_settings", MODE_PRIVATE);
         android.app.ActivityManager manager = (android.app.ActivityManager)getSystemService(ACTIVITY_SERVICE);
         int runningPid = 0;
@@ -148,10 +405,31 @@ public final class LauncherActivity extends Activity {
             if ((getPackageName() + ":game").equals(process.processName)) runningPid = process.pid;
         final int gamePid = runningPid;
         Runnable start = () -> {
+            // A resumed process owns its config. Prepare files only for a new
+            // process, after any requested restart has stopped the old one.
+            if (gamePid == 0 || !signature.equals(settings.getString("running_game_signature", ""))) {
+                try {
+                    File base=baseConfigDir();
+                    if(!base.isDirectory()&&!base.mkdirs())throw new java.io.IOException("Cannot create config folder");
+                    File direct=DirectGameStorage.selected(this,preset);
+                    if (direct == null && readGameDir() != null) {
+                        direct = new File(readGameDir());
+                        DirectGameStorage.checkWritable(direct);
+                        DirectGameStorage.bind(this, preset, direct);
+                    } else if (direct != null) DirectGameStorage.checkWritable(direct);
+                    if(!emergency&&!writeRendererConfig(renderer))throw new java.io.IOException("Could not save renderer settings");
+                    try(FileOutputStream output=new FileOutputStream(new File(base,"android-game-preset.txt"))) {
+                        output.write(preset.id.getBytes(StandardCharsets.UTF_8));
+                    }
+                } catch(Exception error) {
+                    Toast.makeText(this,error.getMessage(),Toast.LENGTH_LONG).show();return;
+                }
+            }
             settings.edit().putString("running_game_signature", signature).apply();
             Intent intent = new Intent(this, GameActivity.class);
             intent.putExtra("game_preset", preset.id);
             intent.putExtra("emergency_start",emergency);
+            intent.putExtra("game_arguments",batchArguments);
             startActivity(intent);
         };
         if (gamePid != 0 && !signature.equals(settings.getString("running_game_signature", ""))) {
@@ -168,10 +446,15 @@ public final class LauncherActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if(state!=null && state.containsKey("pending_direct_preset"))pendingDirectPreset=GamePreset.fromId(state.getString("pending_direct_preset"));
         File configDir = new File(getFilesDir(), ".config/eduke32");
         gameData = new File(configDir, "DUKE3D.GRP");
         gameDirMarker = new File(configDir, "android-game-dir.txt");
         showLauncher();
+    }
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        if(pendingDirectPreset!=null)state.putString("pending_direct_preset",pendingDirectPreset.id);
     }
 
     private void showLauncher() {
@@ -262,6 +545,8 @@ public final class LauncherActivity extends Activity {
                 : preset == GamePreset.BLOODCM ? "Choose the BloodCM folder in Game folder & mods"
                 : "Select game data to get started");
         status.setTextSize(14);
+        File directFolder=DirectGameStorage.selected(this,preset);
+        if(directFolder!=null)status.append("\nRead/write folder: "+directFolder.getAbsolutePath());
         status.setTextColor(gameReady ? 0xFFB7C4D3 : textSecondary);
         status.setPadding(0, (int) (5 * density), 0, (int) (9 * density));
         content.addView(status, new LinearLayout.LayoutParams(-1, -2));
@@ -270,17 +555,9 @@ public final class LauncherActivity extends Activity {
         if (preset == GamePreset.DUKE3D)
             addLauncherAction(content, "GRP", "Choose game data", "Select your DUKE3D.GRP", () -> chooseGameData(), surface, textPrimary, textSecondary, blue, density);
         addLauncherAction(content, "MOD", "Game folder & mods", (preset == GamePreset.BLOODCM ? "Select the folder containing BloodCM.grp and blcons" : "Manage game files and custom content"), () -> chooseGameFolder(), surface, textPrimary, textSecondary, blue, density);
-        addLauncherAction(content, "PAD", "Arrange controls", "Customize touch controls and layout", () -> startActivity(new Intent(this, ControlLayoutActivity.class)), surface, textPrimary, textSecondary, blue, density);
-        addLauncherAction(content, "CFG", "Reset config", "Restore default game settings", () -> confirmResetConfig(), surface, textPrimary, textSecondary, blue, density);
-        addLauncherAction(content, "SAVE", "Saves & settings folder",
-                SaveFolderSync.configured(this,preset.id)?"Folder selected · automatic save backups":"Choose a persistent folder before reinstalling",
-                () -> {Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-                    pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                    startActivityForResult(pick,PICK_SAVE_FOLDER);},surface,textPrimary,textSecondary,blue,density);
-        addLauncherAction(content, "DIAG", "Emergency launch", "Classic · fresh config · audio disabled", () -> {
-            if(gameReady) launchPreset(false,true);
-            else Toast.makeText(this,"Select game data first",Toast.LENGTH_LONG).show();
-        }, surface, textPrimary, textSecondary, blue, density);
+        File[] batchScripts = listBatchScripts(directFolder);
+        if (batchScripts != null && batchScripts.length > 0)
+            addLauncherAction(content,"BAT","PC launch script",getSharedPreferences("launcher_settings",MODE_PRIVATE).getString(preset.id+"_batch", "None - normal launch"),()->chooseBatch(),surface,textPrimary,textSecondary,blue,density);
         addLauncherAction(content, "LOG", "Send log", "Share engine, Android and crash diagnostics", () -> shareLog(), surface, textPrimary, textSecondary, blue, density);
 
         android.content.SharedPreferences launcherSettings =
@@ -300,7 +577,7 @@ public final class LauncherActivity extends Activity {
         LinearLayout rendererCopy = new LinearLayout(this);
         rendererCopy.setOrientation(LinearLayout.VERTICAL);
         TextView rendererTitle = new TextView(this);
-        rendererTitle.setText("Polymer renderer");
+        rendererTitle.setText("Renderer");
         rendererTitle.setTextSize(15);
         rendererTitle.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         rendererTitle.setTextColor(textPrimary);
@@ -311,19 +588,22 @@ public final class LauncherActivity extends Activity {
         rendererCopy.addView(rendererSubtitle, new LinearLayout.LayoutParams(-1, -2));
         rendererCard.addView(rendererCopy, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        ToggleSwitch polymerToggle = new ToggleSwitch(this);
-        polymerToggle.setContentDescription("Enable Polymer renderer");
-        polymerToggle.setChecked(launcherSettings.getBoolean(preset.rendererKey, false));
-        Runnable updateRendererSubtitle = () -> rendererSubtitle.setText(polymerToggle.isChecked()
-                ? "Enhanced lighting · experimental"
-                : "Classic renderer · best compatibility");
-        updateRendererSubtitle.run();
-        polymerToggle.setOnCheckedChangeListener((button, checked) -> {
-            launcherSettings.edit().putBoolean(preset.rendererKey, checked).apply();
-            updateRendererSubtitle.run();
+        RendererMode currentRenderer=selectedRenderer();
+        rendererSubtitle.setText(currentRenderer.title+" - "+currentRenderer.description);
+        TextView rendererArrow=new TextView(this);
+        rendererArrow.setText("Select");rendererArrow.setTextColor(blue);rendererArrow.setTextSize(14);
+        rendererCard.addView(rendererArrow,new LinearLayout.LayoutParams(-2,-2));
+        rendererCard.setContentDescription("Select renderer");
+        rendererCard.setOnClickListener(view->{
+            RendererMode[] modes=RendererMode.values();
+            String[] labels=new String[modes.length];
+            for(int i=0;i<modes.length;i++)labels[i]=modes[i].title;
+            showLauncherChoices("Renderer", labels, selectedRenderer().ordinal(), which -> {
+                        RendererMode chosen=modes[which];
+                        launcherSettings.edit().putString(preset.rendererKey+"_mode",chosen.id).apply();
+                        rendererSubtitle.setText(chosen.title+" - "+chosen.description);
+                    });
         });
-        rendererCard.addView(polymerToggle, new LinearLayout.LayoutParams(-2, -2));
-        rendererCard.setOnClickListener(view -> polymerToggle.setChecked(!polymerToggle.isChecked()));
         LinearLayout.LayoutParams rendererParams = new LinearLayout.LayoutParams(-1, -2);
         rendererParams.topMargin = (int) (10 * density);
         content.addView(rendererCard, rendererParams);
@@ -360,7 +640,7 @@ public final class LauncherActivity extends Activity {
         Button launch = new Button(this);
         launch.setText("▶   Launch " + preset.title);
         launch.setEnabled(gameReady);
-        launch.setOnClickListener(view -> launchPreset(polymerToggle.isChecked()));
+        launch.setOnClickListener(view -> launchPreset(selectedRenderer()));
         styleLauncherButton(launch, accent, textPrimary, density);
         footer.addView(launch, new LinearLayout.LayoutParams(-1, (int) (58 * density)));
         root.addView(footer, new LinearLayout.LayoutParams(-1, -2));
@@ -385,22 +665,23 @@ public final class LauncherActivity extends Activity {
         LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.topMargin=(int)(10*density);content.addView(card,params);
     }
 
-    private boolean writeRendererConfig(boolean enablePolymer) {
+    private boolean writeRendererConfig(RendererMode renderer) {
         File configDir = presetConfigDir();
         if (!configDir.isDirectory() && !configDir.mkdirs()) return false;
         File configFile = new File(configDir, preset.configName);
         String config = "";
         try (FileInputStream input = new FileInputStream(configFile)) {
-            byte[] data = new byte[(int) Math.min(configFile.length(), 1024 * 1024)];
-            int count = input.read(data);
-            if (count > 0) config = new String(data, 0, count, StandardCharsets.UTF_8);
+            if(configFile.length()>8*1024*1024)return false;
+            byte[] data = new byte[(int) configFile.length()];
+            new java.io.DataInputStream(input).readFully(data);
+            config = new String(data, StandardCharsets.UTF_8);
         } catch (java.io.FileNotFoundException ignored) {
         } catch (Exception error) {
             return false;
         }
         if (preset == GamePreset.BLOODCM) {
             config = setConfigValue(config, "Setup", "ForceSetup", "0");
-            config = setConfigValue(config, "Setup", "NoAutoLoad", "1");
+            if(DirectGameStorage.selected(this,preset)==null)config = setConfigValue(config, "Setup", "NoAutoLoad", "1");
             File bindings = new File(configDir, "bloodcm-android_settings.cfg");
             if (bindings.isFile() && bindings.length() < 1024*1024) {
                 try {
@@ -419,14 +700,18 @@ public final class LauncherActivity extends Activity {
                 } catch (Exception error) { return false; }
             }
         }
-        config = setConfigValue(config, "Screen Setup", "Polymer", enablePolymer ? "1" : "0");
-        config = setConfigValue(config, "Screen Setup", "ScreenBPP", enablePolymer ? "32" : "8");
-        try (FileOutputStream output = new FileOutputStream(configFile)) {
+
+        config = setConfigValue(config, "Screen Setup", "Polymer", renderer.polymer ? "1" : "0");
+        config = setConfigValue(config, "Screen Setup", "ScreenBPP", Integer.toString(renderer.colorDepth));
+
+        File stagedConfig=new File(configDir,preset.configName+".tmp");
+        try (FileOutputStream output = new FileOutputStream(stagedConfig)) {
             output.write(config.getBytes(StandardCharsets.UTF_8));
-            return true;
+            output.getFD().sync();
         } catch (Exception error) {
             return false;
         }
+        return stagedConfig.renameTo(configFile);
     }
 
     private String setConfigValue(String config, String section, String key, String value) {
@@ -505,7 +790,45 @@ public final class LauncherActivity extends Activity {
         return actualCrc == expectedCrc && actualSize == expectedSize;
     }
 
-    private void addLauncherAction(LinearLayout parent, String icon, String titleText, String subtitleText,
+    private void showLauncherChoices(String title, String[] choices, int selected,
+                                     java.util.function.IntConsumer onSelect) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        float density = getResources().getDisplayMetrics().density;
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int padding = Math.round(18 * density);
+        panel.setPadding(padding, padding, padding, padding);
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0xFF121923);
+        background.setCornerRadius(20 * density);
+        panel.setBackground(background);
+        TextView heading = new TextView(this);
+        heading.setText(title);
+        heading.setTextColor(0xFFF0F6FF);
+        heading.setTextSize(22);
+        panel.addView(heading);
+        for (int i = 0; i < choices.length; i++) {
+            final int index = i;
+            addLauncherAction(panel, i == selected ? "*" : ">", choices[i],
+                    i == selected ? "Selected" : "", () -> {
+                        dialog.dismiss();
+                        onSelect.accept(index);
+                    }, 0xFF212B3C, 0xFFF0F6FF, 0xFFB2BDCD, 0xFF74AFFF, density);
+        }
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(panel);
+        dialog.setContentView(scroll);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawableResource(android.R.color.transparent);
+            window.setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - padding * 2,
+                    Math.round(520 * density)), android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    private View addLauncherAction(LinearLayout parent, String icon, String titleText, String subtitleText,
                                   Runnable action, int surface, int textPrimary, int textSecondary, int blue, float density) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.HORIZONTAL);
@@ -561,6 +884,7 @@ public final class LauncherActivity extends Activity {
         params.topMargin = (int) (5 * density);
         params.bottomMargin = (int) (5 * density);
         parent.addView(card, params);
+        return card;
     }
 
     private void styleLauncherButton(Button button, int color, int textColor, float density) {
@@ -583,6 +907,7 @@ public final class LauncherActivity extends Activity {
                 .setMessage("This removes settings and key bindings for the selected game preset. Your game files and touch-control layout stay intact.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Reset", (dialog, which) -> {
+
                     File configDir = presetConfigDir();
                     boolean removed = new File(configDir, preset.configName).delete();
                     removed |= new File(configDir, "settings.cfg").delete();
@@ -627,14 +952,80 @@ public final class LauncherActivity extends Activity {
         startActivityForResult(intent, PICK_GAME_DATA);
     }
 
-    private void chooseGameFolder() {
+    private void chooseImportedFolder() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         startActivityForResult(intent, PICK_GAME_FOLDER);
+    }
+
+    private void chooseGameFolder() {
+        pendingDirectPreset = preset;
+        if (DirectGameStorage.hasAccess(this)) chooseDirectFolder();
+        else DirectGameStorage.requestAccess(this);
+    }
+    private void chooseDirectFolder() {
+        final GamePreset selected=pendingDirectPreset==null?preset:pendingDirectPreset;
+        pendingDirectPreset=null;
+        DirectGameStorage.choose(this,selected,root->{
+            if(selected==GamePreset.BLOODCM && !isBloodCmFolder(root))
+                throw new java.io.IOException("Select the folder containing BloodCM.grp and blcons/bloodcm.con");
+            if(selected==GamePreset.DUKE3D) {
+                File[] files=root.listFiles();boolean group=false;
+                if(files!=null)for(File f:files)if(f.isFile()&&f.getName().toLowerCase(Locale.ROOT).endsWith(".grp"))group=true;
+                if(!group)throw new java.io.IOException("Game folder must contain a GRP archive");
+            }
+            DirectGameStorage.bind(this,selected,root);
+            getSharedPreferences("launcher_settings", MODE_PRIVATE).edit()
+                    .putString("active_custom_preset", "")
+                    .putString(selected.id + "_builtin_folder", root.getCanonicalPath())
+                    .putString(selected.id + "_builtin_batch", "")
+                    .remove(selected.id + "_batch").apply();
+            showLauncher();
+        });
+    }
+    private void importPreviousProgress() {
+        if(progressImportRunning)return;
+        final GamePreset selected=preset;
+        final File target=DirectGameStorage.selected(this,selected);
+        if(target==null)return;
+        android.app.ActivityManager manager=(android.app.ActivityManager)getSystemService(ACTIVITY_SERVICE);
+        java.util.List<android.app.ActivityManager.RunningAppProcessInfo> processes=manager.getRunningAppProcesses();
+        if(processes!=null)for(android.app.ActivityManager.RunningAppProcessInfo process:processes)
+            if((getPackageName()+":game").equals(process.processName)) {
+                Toast.makeText(this,"Exit the game before importing progress",Toast.LENGTH_LONG).show();return;
+            }
+        try {
+            final java.util.List<File> files=SaveFolderSync.previousFiles(this,selected);
+            final File source=SaveFolderSync.previousRoot(this,selected);
+            if(files.isEmpty()) {Toast.makeText(this,"No previous Android saves or settings found",Toast.LENGTH_LONG).show();return;}
+            new AlertDialog.Builder(this).setTitle("Import Android progress?")
+                .setMessage("Copy "+files.size()+" files from "+source+" to "+target+". Existing destination files are backed up in android-before-import-… inside the game folder before replacement. Original Android files are retained.")
+                .setNegativeButton("Cancel",null).setPositiveButton("Import",(d,w)->{
+                    progressImportRunning=true;
+                    new Thread(()->{
+                        try {
+                            String backup=ProgressTransfer.copy(source,target,files);
+                            runOnUiThread(()->{progressImportRunning=false;Toast.makeText(this,"Progress imported. Backup: "+backup,Toast.LENGTH_LONG).show();});
+                        } catch(Exception error) {runOnUiThread(()->{progressImportRunning=false;Toast.makeText(this,"Import failed: "+error.getMessage(),Toast.LENGTH_LONG).show();});}
+                    },"progress-import").start();
+                }).show();
+        } catch(Exception error) {Toast.makeText(this,error.getMessage(),Toast.LENGTH_LONG).show();}
+    }
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants) {
+        super.onRequestPermissionsResult(request,permissions,grants);
+        if(request==DirectGameStorage.ACCESS) {
+            if(DirectGameStorage.hasAccess(this))chooseDirectFolder();
+            else Toast.makeText(this,"Folder access denied; game files were not changed",Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if(requestCode==DirectGameStorage.ACCESS) {
+            if(DirectGameStorage.hasAccess(this))chooseDirectFolder();
+            else Toast.makeText(this,"Folder access denied; game files were not changed",Toast.LENGTH_LONG).show();
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         if (requestCode == PICK_GAME_DATA) {
@@ -674,6 +1065,7 @@ public final class LauncherActivity extends Activity {
             if (input == null) throw new IllegalStateException("Cannot open selected file");
             copy(input, output);
             gameDirMarker.delete();
+            DirectGameStorage.marker(this,preset).delete();
             showLauncher();
         } catch (Exception error) {
             Toast.makeText(this, "Could not copy GRP: " + error.getMessage(), Toast.LENGTH_LONG).show();
@@ -703,6 +1095,7 @@ public final class LauncherActivity extends Activity {
             try (FileOutputStream output = new FileOutputStream(gameDirMarker)) {
                 output.write(gameRoot.getAbsolutePath().getBytes("UTF-8"));
             }
+            DirectGameStorage.marker(this,preset).delete();
             String relative=importRoot.toURI().relativize(gameRoot.toURI()).getPath();
             SaveFolderSync.bind(this,preset.id,treeUri,relative);
             SaveFolderSync.restore(this,preset.id);
@@ -754,6 +1147,7 @@ public final class LauncherActivity extends Activity {
     private File findGameRoot(File root) {
         File[] children = root.listFiles();
         if (children == null) return null;
+
 
         if (preset == GamePreset.BLOODCM) {
             if (isBloodCmFolder(root)) return root;
@@ -819,6 +1213,10 @@ public final class LauncherActivity extends Activity {
     }
 
     private String readGameDir() {
+        File direct=DirectGameStorage.selected(this,preset);
+        if(direct!=null)return direct.getAbsolutePath();
+        if ("".equals(getSharedPreferences("launcher_settings", MODE_PRIVATE)
+                .getString(preset.id + "_builtin_folder", null))) return null;
         if (!gameDirMarker.isFile()) return null;
         try {
             byte[] bytes = new byte[(int) gameDirMarker.length()];

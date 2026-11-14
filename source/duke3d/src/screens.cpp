@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #ifdef __ANDROID__
 #include "android.h"
+#include "in_android.h"
 #endif
 
 #include "anim.h"
@@ -1086,6 +1087,9 @@ void G_DisplayRest(int32_t smoothratio)
 
         if (ud.overhead_on > 0)
         {
+#ifdef __ANDROID__
+            AndroidApplyMapZoom(&pp->zoom);
+#endif
             // smoothratio = min(max(smoothratio,0),65536);
             smoothratio = calc_smoothratio(totalclock, ototalclock);
             G_DoInterpolations(smoothratio);

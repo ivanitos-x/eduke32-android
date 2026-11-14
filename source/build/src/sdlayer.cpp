@@ -1439,7 +1439,12 @@ void videoGetModes(int display)
         SDL_ADDMODE(dispmode.w, dispmode.h, 8, 1);
 #ifdef USE_OPENGL
         if (!nogl)
+        {
+#ifdef __ANDROID__
+            SDL_ADDMODE(dispmode.w, dispmode.h, 16, 1);
+#endif
             SDL_ADDMODE(dispmode.w, dispmode.h, 32, 1);
+        }
 #endif
         if ((dispmode.w > maxx) || (dispmode.h > maxy))
         {
@@ -1469,6 +1474,9 @@ void videoGetModes(int display)
         if (nogl)
             continue;
 
+#ifdef __ANDROID__
+        SDL_ADDMODE(mode.x, mode.y, 16, 0);
+#endif
         SDL_ADDMODE(mode.x, mode.y, 32, 0);
 #endif
     }
@@ -1942,6 +1950,13 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
 #endif
               SDL_GL_CONTEXT_ROBUST_ACCESS_FLAG },
               { SDL_GL_CONTEXT_RESET_NOTIFICATION, SDL_GL_CONTEXT_RESET_LOSE_CONTEXT },
+#endif
+#ifdef __ANDROID__
+              { SDL_GL_RED_SIZE, c == 16 ? 5 : 8 },
+              { SDL_GL_GREEN_SIZE, c == 16 ? 6 : 8 },
+              { SDL_GL_BLUE_SIZE, c == 16 ? 5 : 8 },
+              { SDL_GL_ALPHA_SIZE, c == 16 ? 0 : 8 },
+              { SDL_GL_BUFFER_SIZE, c == 16 ? 16 : 32 },
 #endif
               { SDL_GL_DOUBLEBUFFER, 1 },
 
