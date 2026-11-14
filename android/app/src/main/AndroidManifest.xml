@@ -20,9 +20,6 @@
             android:exported="false" android:label="@string/eduke_name"
             android:launchMode="singleInstance" android:screenOrientation="sensorLandscape"
             android:preferMinimalPostProcessing="true" />
-        <activity android:name="com.codex.eduke32.ControlLayoutActivity" android:process=":game"
-            android:exported="false" android:screenOrientation="sensorLandscape"
-            android:label="Arrange controls" />
         <provider android:name="com.codex.eduke32.LogFileProvider"
             android:authorities="com.codex.eduke32.logprovider"
             android:exported="false" android:grantUriPermissions="true" />

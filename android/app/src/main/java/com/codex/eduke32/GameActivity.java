@@ -87,6 +87,7 @@ public final class GameActivity extends SDLActivity {
         return super.dispatchKeyEvent(event);
     }
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if (controlLayout != null) return super.dispatchTouchEvent(event);
         if(mBrokenLibraries)return super.dispatchTouchEvent(event);
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN && nativeTouchMode() == 1) {
@@ -126,10 +127,24 @@ public final class GameActivity extends SDLActivity {
         mainHandler.post(refreshTouchVisibility);
     }
 
+    private ControlLayoutView controlLayout;
+
     public void openControlLayout() {
         runOnUiThread(() -> {
-            if (!isFinishing()) startActivity(new android.content.Intent(this, ControlLayoutActivity.class));
+            if (isFinishing() || mLayout == null || controlLayout != null) return;
+            if (touchControls != null) touchControls.cancelPointers();
+            controlLayout = new ControlLayoutView(this, this::closeControlLayout);
+            mLayout.addView(controlLayout, new android.widget.RelativeLayout.LayoutParams(-1, -1));
         });
+    }
+
+    private void closeControlLayout() {
+        mLayout.removeView(controlLayout);
+        controlLayout = null;
+        if (touchControls != null) {
+            touchControls.loadLayout();
+            touchControls.invalidate();
+        }
     }
 
     @Override protected void onPause() {
@@ -219,6 +234,10 @@ public final class GameActivity extends SDLActivity {
 
     @Override
     public void onBackPressed() {
+        if (controlLayout != null) {
+            closeControlLayout();
+            return;
+        }
         sendMenuBack();
     }
 
@@ -316,8 +335,7 @@ public final class GameActivity extends SDLActivity {
         private java.util.ArrayList<CustomTouchButtons.Button> customButtons = new java.util.ArrayList<>();
         private final android.graphics.Paint customPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private static final int TOUCH_GAME = 5, TOUCH_AUTOMAP = 6, TOUCH_CONSOLE = 7, TOUCH_USERMAP = 8;
-        private static final int[] GAME_ICONS = {ControlArtwork.INVENTORY_PREVIOUS,
-                ControlArtwork.INVENTORY_NEXT, ControlArtwork.MAP, ControlArtwork.CONSOLE};
+        private static final int[] GAME_ICONS = ControlLayoutView.EXTRA_ICONS;
         private static final int[] MAP_ICONS = {ControlArtwork.PARENT_FOLDER,
                 ControlArtwork.UP, ControlArtwork.DOWN, ControlArtwork.START};
         private static final int[] CONSOLE_ICONS = {ControlArtwork.CONSOLE};
@@ -487,18 +505,28 @@ public final class GameActivity extends SDLActivity {
             cancelPointers(); loadLayout();
         }
         private float keyX(int index) {
-            if (inputMode == TOUCH_AUTOMAP) return getWidth() * .37f;
+            if (gameInputMode || inputMode == TOUCH_AUTOMAP) {
+                int key = gameInputMode ? index : 2;
+                return getWidth() * prefs.getFloat("x_" + ControlLayoutView.extraId(key), ControlLayoutView.extraX(key));
+            }
             if (inputMode == TOUCH_USERMAP)
                 return getWidth() * (index == 0 ? .14f : index == 3 ? .89f : .77f);
             return getWidth() * (inputMode == TOUCH_CONSOLE ? .91f : .16f + index * .105f);
         }
         private float keyY(int index) {
+            if (gameInputMode || inputMode == TOUCH_AUTOMAP) {
+                int key = gameInputMode ? index : 2;
+                return getHeight() * prefs.getFloat("y_" + ControlLayoutView.extraId(key), ControlLayoutView.extraY(key));
+            }
             if (inputMode == TOUCH_USERMAP)
                 return getHeight() * (index == 1 ? .56f : index == 2 ? .83f : .72f);
             return getHeight() * (inputMode == TOUCH_CONSOLE ? .59f : .13f);
         }
-        private float keyRadius() {
-            return Math.min(getWidth(), getHeight()) * .048f;
+        private float keyRadius(int index) {
+            float radius = Math.min(getWidth(), getHeight()) * .048f;
+            if (gameInputMode || inputMode == TOUCH_AUTOMAP)
+                radius *= scale(ControlLayoutView.extraId(gameInputMode ? index : 2));
+            return radius;
         }
         private int[] keyActions() {
             return inputMode == TOUCH_USERMAP ? MAP_ACTIONS
@@ -511,7 +539,7 @@ public final class GameActivity extends SDLActivity {
                     : inputMode == TOUCH_CONSOLE ? CONSOLE_ICONS : GAME_ICONS;
             int[] actions = keyActions();
             for (int i = 0; i < icons.length; i++)
-                artwork.button(canvas, keyX(i), keyY(i), keyRadius(), icons[i],
+                artwork.button(canvas, keyX(i), keyY(i), keyRadius(i), icons[i],
                         keyPointers.indexOfValue(actions[i]) >= 0);
         }
         private boolean handleKeys(MotionEvent event) {
@@ -519,8 +547,8 @@ public final class GameActivity extends SDLActivity {
             int pointer = event.getPointerId(index);
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
                 int[] actions = keyActions();
-                float radius = keyRadius();
                 for (int i = 0; i < actions.length; i++) {
+                    float radius = keyRadius(i);
                     float dx = event.getX(index) - keyX(i);
                     float dy = event.getY(index) - keyY(i);
                     if (dx * dx + dy * dy <= radius * radius) {

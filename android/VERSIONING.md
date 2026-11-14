@@ -349,3 +349,12 @@ Avoid calling an unavailable OpenGL fog function when a level configuration
 changes shading. A symbolized DNF 2013 level-transition crash identified this
 call. Gradle debug build passed. Device regression test pending.
 APK SHA-256: 907ba53d022865784efd6eb036323616f6163047624ffbd2927356bdf2228cc5.
+
+## 0.6.15 (code 61)
+
+Arrange controls shows the inventory brackets, map and console buttons and
+applies their positions and sizes in gameplay. The editor opens within the
+game so Done and Android Back return to Touch Setup.
+Gradle debug build passed. Device regression test pending.
+The user confirmed the DNF level-transition fix from 0.6.14.
+APK SHA-256: 05a9d13ea2055c8cdc50684613be55ff7aad8eccbb8715df9257c67e0fb2e9e5.
