@@ -359,8 +359,12 @@ Gradle debug build passed. Device regression test pending.
 The user confirmed the DNF level-transition fix from 0.6.14.
 APK SHA-256: 05a9d13ea2055c8cdc50684613be55ff7aad8eccbb8715df9257c67e0fb2e9e5.
 
-## 0.6.16 (code 62)
+## 0.6.16 (code 62) — unstable
 
 Android Polymost MD3 uses client-side vertex and index arrays instead of
-mapped GL4ES buffers. Gradle debug build passed. Visual verification pending.
+mapped GL4ES buffers. Gradle debug build passed. The user confirmed that
+models are visible in DukePlus with 16-bit Polymost. Polymost still has an
+intermittent sprite issue. The enemy itself appeared distorted into stripes
+in DP EFFECTS (E5L5). Rainbow-colored debris was also reported after an
+enemy exploded. Resuming the game did not clear the distortion.
 APK SHA-256: 5594040eb90819fca0ff7110299be9d0bddfa7966c090e8d062efcebcf6d5d14.
