@@ -382,3 +382,10 @@ Revert both ART loading changes from 0.6.17 after the user reported damaged
 in-game lettering and persistent sprite corruption. The MD3 fix from 0.6.16
 is included. Gradle debug build passed. Visual verification pending.
 APK SHA-256: d22a16fb94a108b7ffb5e52076c44d89317e89cad158fba1435ea0b4e1e36a54.
+
+## 0.6.19 (code 65) — diagnostic build
+
+Validate ART seeks and reads, keep the shared cursor consistent before the
+timer hook, and report incomplete reads by tile. Failed reads use transparent
+pixels. Gradle debug build passed. Sprite corruption still requires testing.
+APK SHA-256: 17f1db5048c89ba12f7e7c43163372cc080c1cdd9caad487ac3b3631ba67d9c7.

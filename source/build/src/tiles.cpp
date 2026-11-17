@@ -732,19 +732,29 @@ void tileLoadData(int16_t tilenume, int32_t dasiz, char *buffer)
         artfilnum = tfn;
         artfilplc = 0L;
 
-        faketimerhandler();
     }
 
-    // Seek to the right position.
-    if (artfilplc != tilefileoffs[tilenume])
+    // Keep the shared ART cursor consistent before calling the timer hook.
+    int const offset = tilefileoffs[tilenume];
+    int bytesRead = 0;
+    if (artfilplc == offset || klseek(artfil, offset, BSEEK_SET) == offset)
+        bytesRead = kread(artfil, buffer, dasiz);
+
+    if (bytesRead == dasiz)
+        artfilplc = offset + dasiz;
+    else
     {
-        klseek(artfil, tilefileoffs[tilenume], BSEEK_SET);
-        faketimerhandler();
+        artfilplc = -1;
+        Bmemset(buffer, 255, dasiz);
+        static uint8_t reported[bitmap_size(MAXTILES)];
+        if (!bitmap_test(reported, tilenume))
+        {
+            bitmap_set(reported, tilenume);
+            LOG_F(WARNING, "Incomplete ART read: tile=%d file=%d offset=%d read=%d expected=%d",
+                  tilenume, tfn, offset, bytesRead, dasiz);
+        }
     }
-
-    kread(artfil, buffer, dasiz);
     faketimerhandler();
-    artfilplc = tilefileoffs[tilenume]+dasiz;
 }
 
 static void tilePostLoad(int16_t tilenume)
