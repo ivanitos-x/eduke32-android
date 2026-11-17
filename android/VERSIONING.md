@@ -396,3 +396,10 @@ Use SoundFont MIDI on Android when auto-detect or Windows MME is selected.
 Search for the bundled GeneralUser bank if no custom bank was configured
 or found. Gradle debug build passed. Sprite corruption remains open.
 APK SHA-256: f2ccd558485961bfbd7d41bda5b39c9801625100583e03005dfe1dbe913eedf9.
+
+## 0.6.21 (code 67) — diagnostic build
+
+Disable per-shade ART texture variants at Android Polymost initialization.
+This uses the existing draw-time shading path to isolate intermittent sprite
+corruption. Gradle debug build passed. Visual verification pending.
+APK SHA-256: 6c2825e182b15534bdaa1505612e30a901c521b6b6ffbf9e0ae954b17b607f36.

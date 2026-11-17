@@ -959,6 +959,10 @@ void polymost_glinit()
 #ifdef __ANDROID__
     // Use the RGBA ART path with the Android GL4ES backend.
     r_useindexedcolortextures = 0;
+    // Diagnostic build: shade RGBA tiles at draw time rather than caching
+    // a separate texture for every shade-table row.
+    if (glrendmode == REND_POLYMOST)
+        r_usetileshades = 0;
     LOG_F(INFO, "Android Polymost: RGBA ART textures enabled");
     LOG_F(INFO, "Android model state: renderer=%d modelsEnabled=%d loadedModels=%d",
           (int)glrendmode, usemodels, nextmodelid);
