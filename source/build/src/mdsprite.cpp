@@ -1989,6 +1989,12 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
     GLfloat pc[4];
     int32_t texunits = GL_TEXTURE0;
 #ifdef __ANDROID__
+    // GL4ES can consume the model's CPU arrays directly.
+    constexpr bool useMappedBuffers = false;
+#else
+    bool const useMappedBuffers = r_vertexarrays;
+#endif
+#ifdef __ANDROID__
     int submittedSurfaces = 0;
 #endif
 
@@ -2201,7 +2207,7 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
         v1 = &s->xyzn[m->nframe*s->numverts];
 
 #ifdef USE_GLEXT
-        if (r_vertexarrays)
+        if (useMappedBuffers)
         {
             if (++curvbo >= r_vbocount)
                 curvbo = 0;
@@ -2238,7 +2244,7 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
                 fp.y = (fp1.y - a0.z)*m0.z + (fp2.y - a0.z)*m1.z;
 
 #ifdef USE_GLEXT
-                if (r_vertexarrays)
+                if (useMappedBuffers)
                     vertexhandle[i] = fp;
 #endif
 
@@ -2254,7 +2260,7 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
                 fp.x = v0[i].y*m0.y + v1[i].y*m1.y;
 
 #ifdef USE_GLEXT
-                if (r_vertexarrays)
+                if (useMappedBuffers)
                     vertexhandle[i] = fp;
 #endif
 
@@ -2263,7 +2269,7 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
         }
 
 #ifdef USE_GLEXT
-        if (r_vertexarrays)
+        if (useMappedBuffers)
         {
             glUnmapBuffer(GL_ARRAY_BUFFER);
             buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
@@ -2345,7 +2351,7 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
                 else VLOG_F(LOG_ENGINE, "polymost_md3draw: glow skin %d has no skinmap", skinNum);
             }
 
-            if (r_vertexarrays)
+            if (useMappedBuffers)
             {
                 buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexvbos[curvbo]);
                 vbotemp = glMapBuffer(GL_ELEMENT_ARRAY_BUFFER, GL_WRITE_ONLY);
@@ -2400,7 +2406,7 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
         else
         {
 #ifdef USE_GLEXT
-            if (r_vertexarrays)
+            if (useMappedBuffers)
             {
                 buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexvbos[curvbo]);
                 vbotemp = glMapBuffer(GL_ELEMENT_ARRAY_BUFFER, GL_WRITE_ONLY);
@@ -2415,7 +2421,7 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
 
         if (r_vertexarrays)
         {
-#ifdef USE_GLEXT
+#if defined(USE_GLEXT) && !defined(__ANDROID__)
             int32_t l;
 
             glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
@@ -2450,12 +2456,38 @@ static int32_t polymost_md3draw(md3model_t *m, tspriteptr_t tspr)
                 buildgl_activeTexture(--texunits);
             }
 #else
+#ifdef __ANDROID__
+            buildgl_bindBuffer(GL_ARRAY_BUFFER, 0);
+            buildgl_bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+            for (int unit = GL_TEXTURE0; unit <= texunits; ++unit)
+            {
+                glClientActiveTexture(unit);
+                glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+                glTexCoordPointer(2, GL_FLOAT, 0, &s->uv[0].u);
+            }
+            glClientActiveTexture(GL_TEXTURE0);
+#else
             glEnableClientState(GL_TEXTURE_COORD_ARRAY);
             glTexCoordPointer(2, GL_FLOAT, 0, &(s->uv[0].u));
+#endif
 
             glVertexPointer(3, GL_FLOAT, 0, &(vertlist[0].x));
 
             glDrawElements(GL_TRIANGLES, s->numtris * 3, GL_UNSIGNED_SHORT, m->vindexes);
+#ifdef __ANDROID__
+            while (texunits > GL_TEXTURE0)
+            {
+                glClientActiveTexture(texunits);
+                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+                glMatrixMode(GL_TEXTURE);
+                glLoadIdentity();
+                glMatrixMode(GL_MODELVIEW);
+                glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE, 1.0f);
+                buildgl_setDisabled(GL_TEXTURE_2D);
+                buildgl_activeTexture(--texunits);
+            }
+            glClientActiveTexture(GL_TEXTURE0);
+#endif
 #endif
         }
 #ifdef USE_GLEXT
