@@ -403,3 +403,10 @@ Disable per-shade ART texture variants at Android Polymost initialization.
 This uses the existing draw-time shading path to isolate intermittent sprite
 corruption. Gradle debug build passed. Visual verification pending.
 APK SHA-256: 6c2825e182b15534bdaa1505612e30a901c521b6b6ffbf9e0ae954b17b607f36.
+
+## 0.6.22 (code 68) — diagnostic build
+
+Restore normal Polymost shading after the 0.6.21 experiment left the glitch
+visible. Log animation changes, ART upload checksums and GL texture bindings
+for the suspected tiles. Gradle debug build passed.
+APK SHA-256: ef2aea2cc60bf26506d55bbaa5e7e55189c4fbc80209a81bdef818f362e72fa5.

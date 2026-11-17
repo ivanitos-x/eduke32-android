@@ -20,6 +20,9 @@ Ken Silverman's official web site: http://www.advsys.net/ken
 #include "colmatch.h"
 #include "texcache.h"
 #include "hash.h"
+#ifdef __ANDROID__
+#include "crc32.h"
+#endif
 
 #ifdef POLYMOST2
 int32_t r_enablepolymost2 = 0;
@@ -959,10 +962,6 @@ void polymost_glinit()
 #ifdef __ANDROID__
     // Use the RGBA ART path with the Android GL4ES backend.
     r_useindexedcolortextures = 0;
-    // Diagnostic build: shade RGBA tiles at draw time rather than caching
-    // a separate texture for every shade-table row.
-    if (glrendmode == REND_POLYMOST)
-        r_usetileshades = 0;
     LOG_F(INFO, "Android Polymost: RGBA ART textures enabled");
     LOG_F(INFO, "Android model state: renderer=%d modelsEnabled=%d loadedModels=%d",
           (int)glrendmode, usemodels, nextmodelid);
@@ -2288,6 +2287,20 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
                 doalloc = true;
             }
         }
+#ifdef __ANDROID__
+        if (dapic == 1 || dapic == 1734 || dapic == 4885)
+        {
+            static int remainingUploads = 48;
+            if (remainingUploads > 0)
+            {
+                --remainingUploads;
+                uint32_t const artCrc = waloff[dapic] ? Bcrc32((void const *)waloff[dapic], picdim, 0) : 0;
+                uint32_t const rgbaCrc = waloff[dapic] ? Bcrc32(pic, siz.x * siz.y * sizeof(*pic), 0) : 0;
+                LOG_F(INFO, "Sprite ART upload: tile=%d pal=%d shade=%d tex=%u size=%dx%d artCRC=%08x rgbaCRC=%08x",
+                      dapic, dapal, dashade, pth->glpic, siz.x, siz.y, artCrc, rgbaCrc);
+            }
+        }
+#endif
         uploadtexture(doalloc, siz, GL_BGRA, pic, tsiz,
                       dameth | DAMETH_ARTIMMUNITY |
                       ((dapic >= MAXUSERTILES) * (DAMETH_NOTEXCOMPRESS|DAMETH_NODOWNSIZE)) | /* never process these short-lived tiles */
@@ -3426,6 +3439,24 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
         polymost_bindPth(pth);
 
         //POGOTODO: I could move this into bindPth
+#ifdef __ANDROID__
+        if ((method & DAMETH_CLAMPED) && (globalpicnum == 1 || globalpicnum == 1734 || globalpicnum == 4885))
+        {
+            static GLuint lastTexture[3] = {};
+            int const slot = globalpicnum == 1 ? 0 : globalpicnum == 1734 ? 1 : 2;
+            static int remainingBindings = 48;
+            if (remainingBindings > 0 && lastTexture[slot] != pth->glpic)
+            {
+                --remainingBindings;
+                lastTexture[slot] = pth->glpic;
+                GLint unit = 0, binding = 0;
+                glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+                glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+                LOG_F(INFO, "Sprite ART draw: tile=%d pal=%d shade=%d cachedTile=%d expectedTex=%u boundTex=%d activeUnit=%d",
+                      globalpicnum, globalpal, globalshade, pth->picnum, pth->glpic, binding, unit - GL_TEXTURE0);
+            }
+        }
+#endif
         if (!(pth->flags & PTH_INDEXED))
             polymost_usePaletteIndexing(false);
         else if (polymost_usetileshades() != TS_TEXTURE)
@@ -8265,7 +8296,21 @@ void polymost_drawsprite(int32_t snum)
     auto const tsprflags = tspr->clipdist;
 
     if (!(tsprflags & TSPR_FLAGS_SLAB))
+#ifdef __ANDROID__
+    {
+        int const originalTile = tspr->picnum;
         tileUpdatePicnum(&tspr->picnum, spritenum + 32768);
+        static int remainingAnimations = 16;
+        if (remainingAnimations > 0 && originalTile != tspr->picnum &&
+            (originalTile == 4885 || tspr->picnum == 4885 || tspr->picnum == 1))
+        {
+            --remainingAnimations;
+            LOG_F(INFO, "Sprite ART animation: owner=%d tile=%d frameTile=%d", spritenum, originalTile, tspr->picnum);
+        }
+    }
+#else
+        tileUpdatePicnum(&tspr->picnum, spritenum + 32768);
+#endif
 
     globalpicnum = tspr->picnum;
     globalshade = tspr->shade;
