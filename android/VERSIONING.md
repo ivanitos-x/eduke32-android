@@ -389,3 +389,10 @@ Validate ART seeks and reads, keep the shared cursor consistent before the
 timer hook, and report incomplete reads by tile. Failed reads use transparent
 pixels. Gradle debug build passed. Sprite corruption still requires testing.
 APK SHA-256: 17f1db5048c89ba12f7e7c43163372cc080c1cdd9caad487ac3b3631ba67d9c7.
+
+## 0.6.20 (code 66) — unstable
+
+Use SoundFont MIDI on Android when auto-detect or Windows MME is selected.
+Search for the bundled GeneralUser bank if no custom bank was configured
+or found. Gradle debug build passed. Sprite corruption remains open.
+APK SHA-256: f2ccd558485961bfbd7d41bda5b39c9801625100583e03005dfe1dbe913eedf9.

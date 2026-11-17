@@ -52,6 +52,12 @@ int MUSIC_Init(int SoundCard)
 {
     int detected = 0;
 
+#ifdef __ANDROID__
+    // Windows configurations can select MME in the shared game directory.
+    if (SoundCard == ASS_WinMM || SoundCard == ASS_AutoDetect)
+        SoundCard = ASS_SF2;
+#endif
+
     if (SoundCard == ASS_AutoDetect)
     {
 redetect:

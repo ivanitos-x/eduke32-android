@@ -138,14 +138,20 @@ int SF2Drv_MIDI_Init(midifuncs* const funcs)
 
         fnlist_clearnames(&fnl);
 
+#ifndef __ANDROID__
         if (!filename[0])
         {
             LOG_F(WARNING, "No .sf2 data found!");
             return SF2_SetError(SF2_BankError);
         }
+#endif
     }
 
+#ifdef __ANDROID__
+    int const loaded = SF2_LoadBank(filename[0] ? filename : "GeneralUser GS SoftSynth v1.44.sf2");
+#else
     int const loaded = SF2_LoadBank(filename);
+#endif
 
     if (filename != SF2_BankFile)
         Xfree(filename);
