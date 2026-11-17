@@ -4,7 +4,7 @@ An unofficial Android port of [EDuke32](https://www.eduke32.com/), based on the
 [upstream source](https://voidpoint.io/terminx/eduke32). This repository keeps the
 upstream history and adds the Android launcher, touch controls and renderer integration.
 
-**Unstable development build 0.6.16 (62).**
+**Unstable development build 0.6.24 (70).**
 Testing has focused on one Xiaomi/POCO device.
 
 [Download the Android APK](releases/EDuke32-Android.apk)
@@ -88,6 +88,8 @@ notes are in [android/VERSIONING.md](android/VERSIONING.md).
 - Polymost can intermittently distort enemy sprites and render explosion debris
   in rainbow colors. Enemy striping was captured in DukePlus, DP EFFECTS (E5L5),
   with 16-bit Polymost. The artifact can persist after resuming the game.
+  Build 0.6.24 fixes an ART texture cache issue found in that trace.
+  In-game verification is pending.
 
 - Polymer is experimental; performance, lighting and lifecycle recovery need more device testing.
 - Persistent save-folder restore needs a verified reinstall/restore round trip.
