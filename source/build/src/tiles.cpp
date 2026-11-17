@@ -646,7 +646,7 @@ bool tileLoad(int16_t tileNum)
     tileLoadData(tileNum, dasiz, (char *) waloff[tileNum]);
 
 #ifdef USE_OPENGL
-    if (videoGetRenderMode() >= REND_POLYMOST &&
+    if (videoGetRenderMode() == REND_POLYMOST && polymost_useindexedtextures() &&
         in3dmode())
     {
         //POGOTODO: this type stuff won't be necessary down the line -- review this
@@ -705,8 +705,12 @@ void tileLoadData(int16_t tilenume, int32_t dasiz, char *buffer)
     // dummy tiles for highres replacements and tilefromtexture definitions
     if (bitmap_test(faketile, tilenume))
     {
-        if (faketiledata[tilenume] != NULL)
-            LZ4_decompress_safe(faketiledata[tilenume], buffer, faketilesize[tilenume], dasiz);
+        if (faketiledata[tilenume] == NULL ||
+            LZ4_decompress_safe(faketiledata[tilenume], buffer, faketilesize[tilenume], dasiz) != dasiz)
+        {
+            // A placeholder has no ART pixels. Its software fallback is transparent.
+            Bmemset(buffer, 255, dasiz);
+        }
 
         faketimerhandler();
         return;

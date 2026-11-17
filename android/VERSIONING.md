@@ -368,3 +368,10 @@ intermittent sprite issue. The enemy itself appeared distorted into stripes
 in DP EFFECTS (E5L5). Rainbow-colored debris was also reported after an
 enemy exploded. Resuming the game did not clear the distortion.
 APK SHA-256: 5594040eb90819fca0ff7110299be9d0bddfa7966c090e8d062efcebcf6d5d14.
+
+## 0.6.17 (code 63) — diagnostic build
+
+Initialize missing or invalid dummy ART pixels as transparent. Avoid indexed
+ART uploads during tile loading when Polymost uses RGBA. Gradle debug build
+passed. The intermittent sprite corruption still requires visual verification.
+APK SHA-256: 4df7e2094f0d925e0a62ee72b46fe40592aa715d7c917cff96f5ecd256c98a14.
