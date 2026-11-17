@@ -1243,6 +1243,7 @@ int32_t artLoadFiles(const char *filename, int32_t askedsize);
 void    artClearMapArt(void);
 void    artSetupMapArt(const char *filename);
 bool    tileLoad(int16_t tilenume);
+bool    tileLoadPixels(int16_t tilenume);
 void    tileLoadData(int16_t tilenume, int32_t dasiz, char *buffer);
 intptr_t tileLoadScaled(int const picnum, vec2_16_t* upscale = nullptr);
 int32_t tileGetCRC32(int16_t tileNum);

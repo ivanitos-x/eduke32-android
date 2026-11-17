@@ -630,7 +630,7 @@ int32_t artLoadFiles(const char *filename, int32_t askedsize)
 //
 static void tilePostLoad(int16_t tilenume);
 
-bool tileLoad(int16_t tileNum)
+bool tileLoadPixels(int16_t tileNum)
 {
     if ((unsigned) tileNum >= (unsigned) MAXTILES) return 0;
     int const dasiz = tilesiz[tileNum].x*tilesiz[tileNum].y;
@@ -644,6 +644,13 @@ bool tileLoad(int16_t tileNum)
     }
 
     tileLoadData(tileNum, dasiz, (char *) waloff[tileNum]);
+    return waloff[tileNum] != 0;
+}
+
+bool tileLoad(int16_t tileNum)
+{
+    if (!tileLoadPixels(tileNum))
+        return false;
 
 #ifdef USE_OPENGL
     if (videoGetRenderMode() >= REND_POLYMOST &&
@@ -660,7 +667,6 @@ bool tileLoad(int16_t tileNum)
 #endif
 
     tilePostLoad(tileNum);
-
     return (waloff[tileNum] != 0 && tilesiz[tileNum].x > 0 && tilesiz[tileNum].y > 0);
 }
 

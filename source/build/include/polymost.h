@@ -302,6 +302,7 @@ enum pthtyp_flags {
 
     PTH_INDEXED = 512,
     PTH_ONEBITALPHA = 1024,
+    PTH_ART_FALLBACK = 2048,
 
     // temporary until I create separate flags for samplers
     PTH_DEPTH_SAMPLER = 16384,

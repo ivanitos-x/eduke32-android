@@ -2123,6 +2123,10 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
         return gloadtile_art_indexed(dapic, dameth, pth, doalloc);
     }
 
+    // ART cache entries can be created outside a draw that loads the tile.
+    if (!waloff[dapic] && (!bitmap_test(faketile, dapic) || faketiledata[dapic]))
+        tileLoadPixels(dapic);
+
     static int32_t fullbrightloadingpass = 0;
     vec2_16_t const & tsizart = tilesiz[dapic];
     vec2_t siz = { 0, 0 }, tsiz = { tsizart.x, tsizart.y };
@@ -2321,6 +2325,8 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
     pth->shade = dashade;
     pth->effects = 0;
     pth->flags = TO_PTH_CLAMPED(dameth) | TO_PTH_NOTRANSFIX(dameth) | (hasalpha*(PTH_HASALPHA|PTH_ONEBITALPHA)) | (npoty*PTH_NPOTWALL);
+    if (!waloff[dapic])
+        pth->flags |= PTH_ART_FALLBACK;
     pth->hicr = NULL;
     pth->siz = tsiz;
 

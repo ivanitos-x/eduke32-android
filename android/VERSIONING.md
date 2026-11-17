@@ -418,3 +418,11 @@ pixel buffer. The 0.6.22 trace showed tile 4885 using the expected GL texture
 but uploading a 31x31 fallback with only its first pixel initialized.
 Gradle debug build passed. Visual verification pending.
 APK SHA-256: 0df3698e1544347a443b2b0e4b80f5590ad4be62fb2e4a5a4f4b4e530e82eabd.
+
+## 0.6.24 (code 70) — unstable
+
+Load source pixels before constructing a true-color ART texture and refresh
+cached fallback textures when pixels become available. A DukePlus trace showed
+tile 1734 drawing a cached fallback while another shade of the same tile used
+the correct pixels from TILES006.ART. Gradle debug build passed.
+APK SHA-256: 060ae0a6f1946e5adc1dadcb905056e3cdc3002ba567e72aa0ef45a74f6fea52.

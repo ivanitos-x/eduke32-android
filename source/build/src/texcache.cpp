@@ -74,13 +74,13 @@ static pthtyp *texcache_tryart(int32_t const dapicnum, int32_t const dapalnum, i
                      (TO_PTH_CLAMPED(dameth) | TO_PTH_NOTRANSFIX(dameth)) &&
                  polymost_want_npotytex(dameth, tilesiz[dapicnum].y) == !!(pth->flags&PTH_NPOTWALL))))
         {
-            if (pth->flags & PTH_INVALIDATED)
+            if ((pth->flags & PTH_INVALIDATED) || ((pth->flags & PTH_ART_FALLBACK) && waloff[dapicnum]))
             {
                 pth->flags &= ~PTH_INVALIDATED;
 
                 // this fixes a problem where per-map art would not be refreshed properly in Polymost between maps, where both maps used mapart
-                int32_t ismapart = (tilefilenum[dapicnum] >= MAXARTFILES_BASE) ? 1 : 0;
-                gloadtile_art(dapicnum, searchpalnum, tintpalnum, dashade, dameth, pth, ismapart);
+                bool const resize = tilefilenum[dapicnum] >= MAXARTFILES_BASE;
+                gloadtile_art(dapicnum, searchpalnum, tintpalnum, dashade, dameth, pth, resize);
                 pth->palnum = dapalnum;
             }
 
