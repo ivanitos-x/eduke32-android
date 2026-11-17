@@ -426,3 +426,13 @@ cached fallback textures when pixels become available. A DukePlus trace showed
 tile 1734 drawing a cached fallback while another shade of the same tile used
 the correct pixels from TILES006.ART. Gradle debug build passed.
 APK SHA-256: 060ae0a6f1946e5adc1dadcb905056e3cdc3002ba567e72aa0ef45a74f6fea52.
+
+## 0.7 (code 71)
+
+First release APK signed with the dedicated EDuke32 key. Local signing can
+use the same certificate for debug and release. The user confirmed the
+Polymost sprite fix in 0.6.24 during DukePlus gameplay. The earlier debug
+certificate differs from the release certificate.
+
+Gradle release build and APK signature verification passed.
+APK SHA-256: 285cd8da13460c85d708d1877cc7d0bf43e03913ef023ddb4f79fc0db45800c7.

@@ -3,6 +3,17 @@ plugins { id "com.android.application" }
 def appVersion = new Properties()
 rootProject.file("version.properties").withInputStream { appVersion.load(it) }
 
+def signingFile = rootProject.file("signing.properties")
+def localSigning = new Properties()
+if (signingFile.isFile()) {
+    signingFile.withInputStream { localSigning.load(it) }
+    ["storeFile", "storePassword", "keyAlias", "keyPassword"].each { property ->
+        if (!localSigning.getProperty(property)) {
+            throw new GradleException("Missing ${property} in android/signing.properties")
+        }
+    }
+}
+
 android {
     namespace "org.libsdl.app"
     compileSdk 37
@@ -25,10 +36,26 @@ android {
             enableV1Signing true
             enableV2Signing true
         }
+        if (signingFile.isFile()) {
+            sharedKey {
+                storeFile rootProject.file(localSigning.getProperty("storeFile"))
+                storePassword localSigning.getProperty("storePassword")
+                keyAlias localSigning.getProperty("keyAlias")
+                keyPassword localSigning.getProperty("keyPassword")
+                enableV1Signing true
+                enableV2Signing true
+            }
+        }
     }
     buildTypes {
-        debug { minifyEnabled false; signingConfig signingConfigs.debug }
-        release { minifyEnabled false }
+        debug {
+            minifyEnabled false
+            signingConfig signingFile.isFile() ? signingConfigs.sharedKey : signingConfigs.debug
+        }
+        release {
+            minifyEnabled false
+            if (signingFile.isFile()) signingConfig signingConfigs.sharedKey
+        }
     }
     sourceSets {
         main {

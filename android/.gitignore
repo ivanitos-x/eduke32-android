@@ -1,3 +1,5 @@
 /local.properties
+/signing.properties
+/signing.txt
 /.gradle/
 /build/

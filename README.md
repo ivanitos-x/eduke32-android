@@ -4,7 +4,7 @@ An unofficial Android port of [EDuke32](https://www.eduke32.com/), based on the
 [upstream source](https://voidpoint.io/terminx/eduke32). This repository keeps the
 upstream history and adds the Android launcher, touch controls and renderer integration.
 
-**Unstable development build 0.6.24 (70).**
+**Current release 0.7 (71).**
 Testing has focused on one Xiaomi/POCO device.
 
 [Download the Android APK](releases/EDuke32-Android.apk)
@@ -78,18 +78,17 @@ On Linux/macOS:
 Output: `android/app/build/outputs/apk/debug/app-debug.apk`.
 The wrapper downloads its configured Gradle distribution. Debug builds use the
 machine's debug signing key; a different signing key cannot update an existing APK.
-Keep your signing key private and backed up when distributing builds.
+For a signed release, configure `android/signing.properties` locally with
+`storeFile`, `storePassword`, `keyAlias`, and `keyPassword`, then run
+`assembleRelease` through the same Gradle wrapper. With local signing
+configured, debug and release share the same certificate. Keep the keystore
+and its credentials private and backed up.
 
 Version numbers are in `android/version.properties`; change history and validation
 notes are in [android/VERSIONING.md](android/VERSIONING.md).
 
 ## Known limitations
 
-- Polymost can intermittently distort enemy sprites and render explosion debris
-  in rainbow colors. Enemy striping was captured in DukePlus, DP EFFECTS (E5L5),
-  with 16-bit Polymost. The artifact can persist after resuming the game.
-  Build 0.6.24 fixes an ART texture cache issue found in that trace.
-  In-game verification is pending.
 
 - Polymer is experimental; performance, lighting and lifecycle recovery need more device testing.
 - Persistent save-folder restore needs a verified reinstall/restore round trip.
