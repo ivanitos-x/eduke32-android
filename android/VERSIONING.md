@@ -375,3 +375,10 @@ Initialize missing or invalid dummy ART pixels as transparent. Avoid indexed
 ART uploads during tile loading when Polymost uses RGBA. Gradle debug build
 passed. The intermittent sprite corruption still requires visual verification.
 APK SHA-256: 4df7e2094f0d925e0a62ee72b46fe40592aa715d7c917cff96f5ecd256c98a14.
+
+## 0.6.18 (code 64) — unstable
+
+Revert both ART loading changes from 0.6.17 after the user reported damaged
+in-game lettering and persistent sprite corruption. The MD3 fix from 0.6.16
+is included. Gradle debug build passed. Visual verification pending.
+APK SHA-256: d22a16fb94a108b7ffb5e52076c44d89317e89cad158fba1435ea0b4e1e36a54.
