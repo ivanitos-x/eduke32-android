@@ -2166,6 +2166,9 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
                 siz = tsiz;
         }
 
+        if (!waloff[dapic])
+            siz = tsiz = { 1, 1 };
+
         coltype *pic = (coltype *)Xmalloc(siz.x*siz.y*sizeof(coltype));
 
         if (!waloff[dapic])
@@ -2173,7 +2176,7 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
             //Force invalid textures to draw something - an almost purely transparency texture
             //This allows the Z-buffer to be updated for mirrors (which are invalidated textures)
             pic[0].r = pic[0].g = pic[0].b = 0; pic[0].a = 1;
-            tsiz.x = tsiz.y = 1; hasalpha = 1;
+            hasalpha = 1;
         }
         else
         {
@@ -2296,8 +2299,8 @@ void gloadtile_art(int32_t dapic, int32_t dapal, int32_t tintpalnum, int32_t das
                 --remainingUploads;
                 uint32_t const artCrc = waloff[dapic] ? Bcrc32((void const *)waloff[dapic], picdim, 0) : 0;
                 uint32_t const rgbaCrc = waloff[dapic] ? Bcrc32(pic, siz.x * siz.y * sizeof(*pic), 0) : 0;
-                LOG_F(INFO, "Sprite ART upload: tile=%d pal=%d shade=%d tex=%u size=%dx%d artCRC=%08x rgbaCRC=%08x",
-                      dapic, dapal, dashade, pth->glpic, siz.x, siz.y, artCrc, rgbaCrc);
+                LOG_F(INFO, "Sprite ART upload: tile=%d pal=%d shade=%d tex=%u size=%dx%d hasART=%d artCRC=%08x rgbaCRC=%08x",
+                      dapic, dapal, dashade, pth->glpic, siz.x, siz.y, waloff[dapic] != 0, artCrc, rgbaCrc);
             }
         }
 #endif

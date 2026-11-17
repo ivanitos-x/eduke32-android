@@ -410,3 +410,11 @@ Restore normal Polymost shading after the 0.6.21 experiment left the glitch
 visible. Log animation changes, ART upload checksums and GL texture bindings
 for the suspected tiles. Gradle debug build passed.
 APK SHA-256: ef2aea2cc60bf26506d55bbaa5e7e55189c4fbc80209a81bdef818f362e72fa5.
+
+## 0.6.23 (code 69) — unstable
+
+Allocate and upload exactly one initialized pixel for ART textures without a
+pixel buffer. The 0.6.22 trace showed tile 4885 using the expected GL texture
+but uploading a 31x31 fallback with only its first pixel initialized.
+Gradle debug build passed. Visual verification pending.
+APK SHA-256: 0df3698e1544347a443b2b0e4b80f5590ad4be62fb2e4a5a4f4b4e530e82eabd.
