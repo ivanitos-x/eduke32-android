@@ -15,8 +15,13 @@ import org.json.JSONObject;
 final class CustomTouchButtons {
     static final int LIMIT = 12;
 
-    static void draw(android.graphics.Canvas canvas, android.graphics.Paint paint, Button button,
+    static void draw(android.graphics.Canvas canvas, android.graphics.Paint paint, ControlArtwork artwork, Button button,
                      float x, float y, float radius, boolean pressed) {
+        if (button.binding == null && button.action == 1
+                || "Alt_Fire".equalsIgnoreCase(button.binding)) {
+            artwork.button(canvas, x, y, radius, ControlArtwork.ALTERNATE_FIRE, pressed);
+            return;
+        }
         int oldColor = paint.getColor();
         float oldSize = paint.getTextSize();
         android.graphics.Paint.Style oldStyle = paint.getStyle();
@@ -27,7 +32,7 @@ final class CustomTouchButtons {
         paint.setColor(0xFFF4F6F8);
         paint.setTextAlign(android.graphics.Paint.Align.CENTER);
         paint.setTextSize(radius * .48f);
-        String label = LABELS[button.action];
+        String label = button.label();
         float width = paint.measureText(label);
         if (width > radius * 1.7f) paint.setTextSize(paint.getTextSize() * radius * 1.7f / width);
         canvas.drawText(label, x, y - (paint.ascent() + paint.descent()) * .5f, paint);
@@ -45,8 +50,17 @@ final class CustomTouchButtons {
 
     static final class Button {
         int action;
+        String binding;
         float x = .5f, y = .5f, size = 1f;
         Button(int action) { this.action = action; }
+        String label() { return binding == null ? LABELS[action] : binding.replace('_', ' '); }
+        int resolve(String[] functions) {
+            if (binding == null) return action;
+            if (functions != null)
+                for (int i = 0; i < functions.length; i++)
+                    if (binding.equalsIgnoreCase(functions[i])) return 256 + i;
+            return -1;
+        }
     }
 
     private static AtomicFile file(Context context) {
@@ -59,9 +73,11 @@ final class CustomTouchButtons {
             JSONArray data = new JSONArray(new String(file(context).readFully(), StandardCharsets.UTF_8));
             for (int i = 0; i < data.length() && result.size() < LIMIT; i++) {
                 JSONObject item = data.getJSONObject(i);
-                int action = item.getInt("action");
-                if (action < 0 || action >= LABELS.length) continue;
+                int action = item.optInt("action", -1);
+                String binding = item.optString("binding", "");
+                if (binding.isEmpty() && (action < 0 || action >= LABELS.length)) continue;
                 Button button = new Button(action);
+                button.binding = binding.isEmpty() ? null : binding;
                 button.x = clamp(item.optDouble("x", .5), 0f, 1f, .5f);
                 button.y = clamp(item.optDouble("y", .5), 0f, 1f, .5f);
                 button.size = clamp(item.optDouble("size", 1), .65f, 1.5f, 1f);
@@ -85,7 +101,7 @@ final class CustomTouchButtons {
         try {
             JSONArray data = new JSONArray();
             for (Button button : buttons) {
-                data.put(new JSONObject().put("action", button.action)
+                data.put(new JSONObject().put("action", button.action).put("binding", button.binding)
                         .put("x", button.x).put("y", button.y).put("size", button.size));
             }
             output = file.startWrite();

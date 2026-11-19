@@ -28,6 +28,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include "colmatch.h"
 #include "duke3d.h"
+#include "cheats.h"
 #include "input.h"
 #include "microprofile.h"
 #include "screens.h"
@@ -4247,6 +4248,13 @@ ACTOR_STATIC void G_MoveActors(void)
             DELETE_SPRITE_AND_CONTINUE(spriteNum);
 
         switchPic = pSprite->picnum;
+#ifdef __ANDROID__
+        if (g_freezeEnemyAI && numplayers == 1 && !g_netServer && pSprite->extra > 0 && A_CheckEnemySprite(pSprite))
+        {
+            spriteNum = nextSprite;
+            continue;
+        }
+#endif
 
 #ifndef EDUKE32_STANDALONE
         if (!FURY && pSprite->picnum > GREENSLIME && pSprite->picnum <= GREENSLIME+7)

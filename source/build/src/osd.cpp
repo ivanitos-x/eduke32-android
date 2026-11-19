@@ -22,6 +22,10 @@ static osdsymbol_t *osd_findexactsymbol(const char *pszName);
 
 static int32_t whiteColorIdx=-1;            // colour of white (used by default display routines)
 static void _internal_drawosdchar(int, int, char, int, int);
+#ifdef __ANDROID__
+extern "C" void AndroidShowKeyboard(int);
+extern void AndroidSetConsoleShown(int);
+#endif
 static void _internal_drawosdstr(int, int, const char *, int, int, int);
 static void _internal_drawosdcursor(int32_t,int32_t,int32_t,int32_t);
 static int32_t _internal_getcolumnwidth(int32_t);
@@ -1543,7 +1547,12 @@ void OSD_ResizeDisplay(int w, int h)
     auto &t = osd->text;
     auto &d = osd->draw;
 
-    int const newcols     = osd->cb->getcolumnwidth(w);
+    int const columns = osd->cb->getcolumnwidth(w);
+#ifdef __ANDROID__
+    int const newcols = max(1, columns - 2 * (columns / 20));
+#else
+    int const newcols = columns;
+#endif
     d.cols     = newcols;
 
     int const newmaxlines = OSDBUFFERSIZE / newcols;
@@ -1574,6 +1583,10 @@ void OSD_CaptureInput(int cap)
     osd->flags = (osd->flags & ~(OSD_CAPTURE|OSD_CTRL|OSD_SHIFT)) | (-cap & OSD_CAPTURE);
     mouseGrabInput(cap == 0 ? g_mouseLockedToWindow : 0);
     osd->cb->onshowosd(cap);
+#ifdef __ANDROID__
+    AndroidSetConsoleShown(cap);
+    AndroidShowKeyboard(cap);
+#endif
 
     keyFlushChars();
 }
@@ -1638,10 +1651,15 @@ void OSD_Draw(void)
     int topoffs = osd->draw.head * osd->draw.cols;
     int row     = osdrowscur - 1;
     int lines   = min(osd->text.lines - osd->draw.head, osdrowscur);
+#ifdef __ANDROID__
+    int const left = max(0, (osd->cb->getcolumnwidth(xdim) - osd->draw.cols) / 2);
+#else
+    constexpr int left = 0;
+#endif
 
     videoBeginDrawing();
 
-    osd->cb->clear(osd->draw.cols,osdrowscur+1);
+    osd->cb->clear(osd->draw.cols + 2 * left,osdrowscur+1);
 
     for (; lines>0; lines--, row--)
     {
@@ -1652,7 +1670,7 @@ void OSD_Draw(void)
         if (topoffs + osd->draw.cols-1 >= OSDBUFFERSIZE)
             break;
 
-        osd->cb->drawstr(0, row, osd->text.buf + topoffs, osd->draw.cols, osd->draw.textshade, osd->draw.textpal);
+        osd->cb->drawstr(left, row, osd->text.buf + topoffs, osd->draw.cols, osd->draw.textshade, osd->draw.textpal);
         topoffs += osd->draw.cols;
     }
 
@@ -1660,29 +1678,29 @@ void OSD_Draw(void)
     int const shade  = osd->draw.promptshade ? osd->draw.promptshade : (sintable[((int32_t) timer120()<<4)&2047]>>11);
 
     if (osd->draw.head == osd->text.lines-1)
-        osd->cb->drawchar(0, osdrowscur, '~', shade, osd->draw.promptpal);
+        osd->cb->drawchar(left, osdrowscur, '~', shade, osd->draw.promptpal);
     else if (osd->draw.head > 0)
-        osd->cb->drawchar(0, osdrowscur, '^', shade, osd->draw.promptpal);
+        osd->cb->drawchar(left, osdrowscur, '^', shade, osd->draw.promptpal);
 
     if (osd->flags & OSD_CAPS)
-        osd->cb->drawchar((osd->draw.head > 0), osdrowscur, 'C', shade, osd->draw.promptpal);
+        osd->cb->drawchar(left + (osd->draw.head > 0), osdrowscur, 'C', shade, osd->draw.promptpal);
 
     if (osd->flags & OSD_SHIFT)
-        osd->cb->drawchar(1 + (osd->flags & OSD_CAPS && osd->draw.head > 0), osdrowscur, 'H', shade, osd->draw.promptpal);
+        osd->cb->drawchar(left + 1 + (osd->flags & OSD_CAPS && osd->draw.head > 0), osdrowscur, 'H', shade, osd->draw.promptpal);
 
-    osd->cb->drawchar(2 + offset, osdrowscur, '>', shade, osd->draw.promptpal);
+    osd->cb->drawchar(left + 2 + offset, osdrowscur, '>', shade, osd->draw.promptpal);
 
     int const len = min(osd->draw.cols-1-3 - offset, osd->editor.len - osd->editor.start);
 
     for (int x=len-1; x>=0; x--)
-        osd->cb->drawchar(3 + x + offset, osdrowscur, osd->editor.buf[osd->editor.start+x], osd->draw.editshade<<1, osd->draw.editpal);
+        osd->cb->drawchar(left + 3 + x + offset, osdrowscur, osd->editor.buf[osd->editor.start+x], osd->draw.editshade<<1, osd->draw.editpal);
 
     offset += 3 + osd->editor.pos - osd->editor.start;
 
-    osd->cb->drawcursor(offset,osdrowscur,osd->flags & OSD_OVERTYPE,osdkeytime);
+    osd->cb->drawcursor(left + offset,osdrowscur,osd->flags & OSD_OVERTYPE,osdkeytime);
 
     if (osd->version.buf)
-        osd->cb->drawstr(osd->draw.cols - osd->version.len, osdrowscur - (offset >= osd->draw.cols - osd->version.len),
+        osd->cb->drawstr(left + osd->draw.cols - osd->version.len, osdrowscur - (offset >= osd->draw.cols - osd->version.len),
                     osd->version.buf, osd->version.len, (sintable[((int32_t) timer120()<<4)&2047]>>11), osd->version.pal);
 
     videoEndDrawing();

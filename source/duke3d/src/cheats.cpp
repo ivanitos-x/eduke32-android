@@ -25,6 +25,24 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "duke3d.h"
 #include "osdcmds.h"
 
+#ifdef __ANDROID__
+int32_t g_freezeEnemyAI;
+int32_t g_unlimitedAmmo;
+
+void G_FillCheatAmmo(bool giveWeapons)
+{
+    auto const player = g_player[myconnectindex].ps;
+    int const limit = VOLUMEONE ? SHRINKER_WEAPON : MAX_WEAPONS;
+    for (int weapon = PISTOL_WEAPON; weapon < limit; ++weapon)
+    {
+        if (giveWeapons)
+            player->gotweapon |= 1 << weapon;
+        if (player->gotweapon & (1 << weapon))
+            P_AddAmmo(player, weapon, player->max_ammo_amount[weapon]);
+    }
+}
+#endif
+
 char CheatStrings [NUMCHEATS][MAXCHEATLEN] =
 {
 #ifndef EDUKE32_STANDALONE

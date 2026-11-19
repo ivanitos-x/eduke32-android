@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 //-------------------------------------------------------------------------
 
 #pragma once
+#include <stdint.h>
 
 #define MAXCHEATLEN 20
 #define MAXCHEATDESC 64
@@ -92,3 +93,8 @@ enum CheatCodeFunctions
     CHEATFUNC_DEBUG,
     NUMCHEATFUNCS,
 };
+#ifdef __ANDROID__
+extern int32_t g_freezeEnemyAI;
+extern int32_t g_unlimitedAmmo;
+void G_FillCheatAmmo(bool giveWeapons);
+#endif

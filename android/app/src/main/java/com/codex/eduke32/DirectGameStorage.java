@@ -8,7 +8,12 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.Settings;
-import android.widget.EditText;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -41,46 +46,106 @@ final class DirectGameStorage {
         } else a.requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE},ACCESS);
     }
     interface Selection { void accept(File root) throws Exception; }
-    static void choose(Activity a, GamePreset p, Selection selection) {
-        EditText path = new EditText(a);
-        path.setSingleLine(true);
-        File old = selected(a,p);
-        path.setText(old == null ? new File(Environment.getExternalStorageDirectory(),"Games").getAbsolutePath() : old.getPath());
-        AlertDialog dialog = new AlertDialog.Builder(a).setTitle("Game working folder")
-                .setMessage("Enter the full folder path, for example /storage/emulated/0/Games/Duke3D. The game reads and writes here: saves, settings, logs, cache and campaign data. Files are not imported. Existing Android progress remains in its previous folder.")
-                .setView(path).setNegativeButton("Cancel",null)
-                .setNeutralButton("Browse",(d,w)->{
-                    File start=new File(path.getText().toString().trim());
-                    while(!start.isDirectory() && start.getParentFile()!=null)start=start.getParentFile();
-                    browse(a,start,selection);
-                }).setPositiveButton("Use folder",null).create();
-        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(w -> {
+    static void choose(Activity activity, GamePreset preset, Selection selection) {
+        File directory = selected(activity, preset);
+        if (directory == null || !directory.isDirectory())
+            directory = Environment.getExternalStorageDirectory();
+        browse(activity, directory, selection);
+    }
+
+    private static int dp(Activity activity, int value) {
+        return Math.round(value * activity.getResources().getDisplayMetrics().density);
+    }
+
+    private static TextView folderRow(Activity activity, String label, Runnable action) {
+        TextView row = new TextView(activity);
+        row.setText(label);
+        row.setTextColor(0xffeff4fa);
+        row.setTextSize(16);
+        row.setPadding(dp(activity, 14), dp(activity, 12), dp(activity, 14), dp(activity, 12));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0xff253142);
+        background.setCornerRadius(dp(activity, 10));
+        row.setBackground(background);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.bottomMargin = dp(activity, 6);
+        row.setLayoutParams(params);
+        row.setOnClickListener(view -> action.run());
+        return row;
+    }
+
+    private static void browse(Activity activity, File directory, Selection selection) {
+        LinearLayout panel = new LinearLayout(activity);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundColor(0xff141b25);
+        int padding = dp(activity, 16);
+        panel.setPadding(padding, padding, padding, padding);
+
+        TextView title = new TextView(activity);
+        title.setText("Game folder");
+        title.setTextSize(22);
+        title.setTextColor(Color.WHITE);
+        panel.addView(title);
+
+        TextView path = new TextView(activity);
+        path.setText(directory.getAbsolutePath());
+        path.setTextColor(0xffb7c4d3);
+        path.setPadding(0, dp(activity, 6), 0, dp(activity, 12));
+        panel.addView(path);
+
+        AlertDialog dialog = new AlertDialog.Builder(activity).setView(panel).create();
+        File parent = directory.getParentFile();
+        if (parent != null) {
+            panel.addView(folderRow(activity, "↑  Parent folder", () -> {
+                dialog.dismiss();
+                browse(activity, parent, selection);
+            }));
+        }
+        ScrollView scroll = new ScrollView(activity);
+        LinearLayout rows = new LinearLayout(activity);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(rows);
+        panel.addView(scroll, new LinearLayout.LayoutParams(-1,
+                Math.min(dp(activity, 280), activity.getResources().getDisplayMetrics().heightPixels / 3)));
+        File[] entries = directory.listFiles(File::isDirectory);
+        if (entries != null && entries.length > 0) {
+            java.util.Arrays.sort(entries, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+            for (File entry : entries)
+                rows.addView(folderRow(activity, entry.getName() + "  ›", () -> {
+                    dialog.dismiss();
+                    browse(activity, entry, selection);
+                }));
+        } else {
+            TextView empty = new TextView(activity);
+            empty.setText(entries == null ? "Cannot read this folder." : "No subfolders.");
+            empty.setTextColor(0xffb7c4d3);
+            rows.addView(empty);
+        }
+
+        LinearLayout actions = new LinearLayout(activity);
+        actions.setGravity(android.view.Gravity.END);
+        Button cancel = new Button(activity);
+        cancel.setText("Cancel");
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        actions.addView(cancel);
+        Button use = new Button(activity);
+        use.setText("Use this folder");
+        use.setEnabled(entries != null);
+        use.setOnClickListener(view -> {
             try {
-                File root = new File(path.getText().toString().trim()).getCanonicalFile();
+                File root = directory.getCanonicalFile();
                 checkWritable(root);
                 selection.accept(root);
                 dialog.dismiss();
-            } catch (Exception e) { Toast.makeText(a,e.getMessage(),Toast.LENGTH_LONG).show(); }
-        }));
+            } catch (Exception error) {
+                Toast.makeText(activity, error.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        });
+        actions.addView(use);
+        panel.addView(actions);
         dialog.show();
     }
-    private static void browse(Activity a,File directory,Selection selection) {
-        File[] entries=directory.listFiles(File::isDirectory);
-        if(entries==null) {Toast.makeText(a,"Cannot list "+directory,Toast.LENGTH_LONG).show();return;}
-        java.util.Arrays.sort(entries,(x,y)->x.getName().compareToIgnoreCase(y.getName()));
-        boolean parent=directory.getParentFile()!=null;
-        String[] names=new String[entries.length+(parent?1:0)];
-        if(parent)names[0]=".. (parent folder)";
-        for(int i=0;i<entries.length;i++)names[i+(parent?1:0)]=entries[i].getName()+"/";
-        AlertDialog dialog=new AlertDialog.Builder(a).setTitle(directory.getAbsolutePath())
-                .setItems(names,(d,w)->browse(a,parent&&w==0?directory.getParentFile():entries[w-(parent?1:0)],selection))
-                .setNegativeButton("Cancel",null).setPositiveButton("Use this folder",null).create();
-        dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(w->{
-            try {File root=directory.getCanonicalFile();checkWritable(root);selection.accept(root);dialog.dismiss();}
-            catch(Exception e) {Toast.makeText(a,e.getMessage(),Toast.LENGTH_LONG).show();}
-        }));
-        dialog.show();
-    }
+
     static void checkWritable(File root) throws IOException {
         if (!root.isDirectory() || !root.canRead() || root.list() == null)
             throw new IOException("Cannot read game folder: "+root);

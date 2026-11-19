@@ -1337,6 +1337,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         return mSingleton.commandHandler.post(new ShowTextInputTask(x, y, w, h));
     }
 
+    protected boolean handleKeyboardBack() {
+        return false;
+    }
+
     public static boolean isTextInputEvent(KeyEvent event) {
 
         // Key pressed with Ctrl should be sent as SDL_KEYDOWN/SDL_KEYUP and not SDL_TEXTINPUT
@@ -1997,6 +2001,8 @@ class DummyEdit extends View implements View.OnKeyListener {
         // FIXME: And determine the keyboard presence doing this: http://stackoverflow.com/questions/2150078/how-to-check-visibility-of-software-keyboard-in-android
         // FIXME: An even more effective way would be if Android provided this out of the box, but where would the fun be in that :)
         if (event.getAction()==KeyEvent.ACTION_UP && keyCode == KeyEvent.KEYCODE_BACK) {
+            if (SDLActivity.mSingleton != null && SDLActivity.mSingleton.handleKeyboardBack())
+                return true;
             if (SDLActivity.mTextEdit != null && SDLActivity.mTextEdit.getVisibility() == View.VISIBLE) {
                 SDLActivity.onNativeKeyboardFocusLost();
             }

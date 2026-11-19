@@ -7440,6 +7440,10 @@ int G_DoMoveThings(void)
 
     if (ud.pause_on == 0)
         G_MoveWorld();
+#ifdef __ANDROID__
+    if (g_unlimitedAmmo && numplayers == 1 && !g_netServer && ud.pause_on == 0)
+        G_FillCheatAmmo(false);
+#endif
 
 //    Net_CorrectPrediction();
 

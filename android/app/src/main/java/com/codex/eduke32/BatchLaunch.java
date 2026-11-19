@@ -19,6 +19,7 @@ final class BatchLaunch {
             List<String> tokens=tokenize(line);
             String exe=tokens.get(0).replace('\\','/');
             exe=exe.substring(exe.lastIndexOf('/')+1);
+            if (exe.startsWith("_")) exe = exe.substring(1);
             if(!exe.equalsIgnoreCase("eduke32.exe")&&!exe.equalsIgnoreCase("eduke32"))
                 throw new IOException("Unsupported batch command on line "+number+": "+tokens.get(0));
             if(launch!=null)throw new IOException("Batch contains multiple engine launches; select a simpler script");

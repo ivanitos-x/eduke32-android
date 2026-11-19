@@ -376,7 +376,7 @@ void AndroidOSD(const char * cmd)
     OSD_Dispatch(cmd);
 }
 
-int consoleShown = 0;
+static std::atomic<bool> consoleShown{false};
 void AndroidSetConsoleShown(int onf)
 {
     consoleShown = onf;

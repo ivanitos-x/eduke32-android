@@ -11,7 +11,8 @@ final class ControlArtwork {
     private Path path;
     static final int INVENTORY_PREVIOUS = 8, INVENTORY_NEXT = 9, MAP = 10,
             CONSOLE = 11, PARENT_FOLDER = 12, UP = 13, DOWN = 14, START = 15;
-    private final Path[] icons = new Path[START + 1];
+    static final int ALTERNATE_FIRE = 16;
+    private final Path[] icons = new Path[ALTERNATE_FIRE + 1];
 
     void stick(Canvas c, float x, float y, float r, float ax, float ay, boolean active) {
         p.setStyle(Paint.Style.FILL);
@@ -51,7 +52,7 @@ final class ControlArtwork {
         p.setStrokeWidth(.065f);
         p.setStrokeCap(Paint.Cap.ROUND);
         p.setStrokeJoin(Paint.Join.ROUND);
-        int icon=Math.max(0,Math.min(START,action));
+        int icon=Math.max(0,Math.min(ALTERNATE_FIRE,action));
         if(icons[icon]==null) {
         path=new Path();
         switch (icon) {
@@ -123,6 +124,10 @@ final class ControlArtwork {
                 break;
             case START:
                 poly(c,-.30f,-.45f,.45f,0,-.30f,.45f,-.30f,-.45f);
+                break;
+            case ALTERNATE_FIRE:
+                path.addCircle(0, 0, .35f, Path.Direction.CW);
+                poly(c, .05f,-.25f, -.15f,.04f, .04f,.04f, -.03f,.25f, .19f,-.06f, 0,-.06f);
                 break;
             default: // Enter/confirm.
                 poly(c, .36f,-.36f, .36f,.06f, -.38f,.06f, -.13f,-.19f);

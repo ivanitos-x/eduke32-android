@@ -88,6 +88,24 @@ int ALSA_PortID = 0;
 static int mappedActions[16] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 static uint8_t actionCounts[0x300];
 
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_codex_eduke32_GameActivity_nativeGameFunctions(JNIEnv *env, jclass)
+{
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (!stringClass) return nullptr;
+    jobjectArray result = env->NewObjectArray(NUMGAMEFUNCTIONS, stringClass, nullptr);
+    if (!result) return nullptr;
+    for (int i = 0; i < NUMGAMEFUNCTIONS; ++i)
+    {
+        if (!gamefunctions[i][0] || i == gamefunc_Show_Console) continue;
+        jstring name = env->NewStringUTF(gamefunctions[i]);
+        if (!name) return nullptr;
+        env->SetObjectArrayElement(result, i, name);
+        env->DeleteLocalRef(name);
+    }
+    return result;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_codex_eduke32_GameActivity_nativeCustomAction(JNIEnv *, jclass, jint action, jboolean down)
 {
@@ -98,8 +116,9 @@ Java_com_codex_eduke32_GameActivity_nativeCustomAction(JNIEnv *, jclass, jint ac
         gamefunc_Jetpack, gamefunc_NightVision, gamefunc_Steroids, gamefunc_Holo_Duke, gamefunc_Map,
         gamefunc_Quick_Save, gamefunc_Quick_Load,
     };
-    if ((unsigned)action >= sizeof(actions) / sizeof(actions[0])) return;
-    int const mapped = actions[action];
+    int const mapped = action >= 256 ? action - 256
+                     : (unsigned)action < sizeof(actions) / sizeof(actions[0]) ? actions[action] : -1;
+    if ((unsigned)mapped >= NUMGAMEFUNCTIONS) return;
     auto &count = actionCounts[mapped];
     if (down)
     {
@@ -120,6 +139,11 @@ Java_com_codex_eduke32_GameActivity_nativeAction(JNIEnv *, jclass, jint action, 
         gamefunc_Inventory_Left, gamefunc_Inventory_Right, gamefunc_Map
     };
 
+    if (action == 18)
+    {
+        AndroidKeyEvent(down, SDL_SCANCODE_ESCAPE, 0);
+        return;
+    }
     if (action == 16 || action == 17)
     {
         AndroidKeyEvent(down, action == 16 ? SDL_SCANCODE_GRAVE : SDL_SCANCODE_BACKSPACE, 0);

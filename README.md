@@ -4,7 +4,7 @@ An unofficial Android port of [EDuke32](https://www.eduke32.com/), based on the
 [upstream source](https://voidpoint.io/terminx/eduke32). This repository keeps the
 upstream history and adds the Android launcher, touch controls and renderer integration.
 
-**Current release 0.7 (71).**
+**Current release 0.7.1 (72).**
 Testing has focused on one Xiaomi/POCO device.
 
 [Download the Android APK](releases/EDuke32-Android.apk)

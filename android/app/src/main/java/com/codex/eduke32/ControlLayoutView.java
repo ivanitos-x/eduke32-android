@@ -144,11 +144,27 @@ final class ControlLayoutView extends FrameLayout {
             return;
         }
         boolean constEdit = index >= 0 && index < custom.size();
+        java.util.ArrayList<String> labels = new java.util.ArrayList<>(
+                java.util.Arrays.asList(CustomTouchButtons.LABELS));
+        java.util.ArrayList<String> bindings = new java.util.ArrayList<>();
+        String[] functions = GameActivity.nativeGameFunctions();
+        if (functions != null) {
+            for (String name : functions) {
+                if (name == null) continue;
+                String label = name.replace('_', ' ');
+                if (labels.stream().anyMatch(label::equalsIgnoreCase)) continue;
+                labels.add(label);
+                bindings.add(name);
+            }
+        }
         android.app.AlertDialog.Builder dialog = new android.app.AlertDialog.Builder(getContext())
                 .setTitle(constEdit ? "Change binding" : "Add button")
-                .setItems(CustomTouchButtons.LABELS, (choice, action) -> {
-                    if (constEdit) custom.get(index).action = action;
-                    else custom.add(new CustomTouchButtons.Button(action));
+                .setItems(labels.toArray(new String[0]), (choice, action) -> {
+                    CustomTouchButtons.Button button = constEdit ? custom.get(index) : new CustomTouchButtons.Button(action);
+                    int builtInCount = CustomTouchButtons.LABELS.length;
+                    button.action = action < builtInCount ? action : -1;
+                    button.binding = action < builtInCount ? null : bindings.get(action - builtInCount);
+                    if (!constEdit) custom.add(button);
                     saveCustom();
                     preview.select(NAMES.length + (constEdit ? index : custom.size() - 1));
                 })
@@ -204,7 +220,7 @@ final class ControlLayoutView extends FrameLayout {
                 return;
             }
             String label = selected < NAMES.length ? NAMES[selected]
-                    : CustomTouchButtons.LABELS[custom.get(selected - NAMES.length).action];
+                    : custom.get(selected - NAMES.length).label();
             help.setText(label + " • " + Math.round(scale(selected) * 100) + "%");
         }
         private void select(int index) {
@@ -235,7 +251,7 @@ final class ControlLayoutView extends FrameLayout {
                 canvas.drawText(NAMES[i]+(stick?" (floating)":""),px,py+r+paint.getTextSize()*1.3f,paint);
             }
             for (int i = NAMES.length; i < NAMES.length + custom.size(); i++) {
-                CustomTouchButtons.draw(canvas, paint, custom.get(i - NAMES.length),
+                CustomTouchButtons.draw(canvas, paint, artwork, custom.get(i - NAMES.length),
                         cx(i), cy(i), elementRadius(i), i == selected);
             }
         }

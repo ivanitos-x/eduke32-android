@@ -11,6 +11,8 @@ Select **None - normal launch** to clear it. Emergency launch ignores the script
 This is a limited importer, not Windows command execution. Blank lines, REM/::
 comments and basic echo/cls/pause presentation are ignored. A single eduke32 or
 eduke32.exe invocation supports quoted arguments and converts backslash paths.
+The executable may also be named `_eduke32.exe`. Both names work without the
+`.exe` extension.
 Variables, command operators, unknown commands, malformed quotes and multiple
 engine launches report an error. Other executables are not run. Scripts that
 change directory or call other scripts require additional explicit support.

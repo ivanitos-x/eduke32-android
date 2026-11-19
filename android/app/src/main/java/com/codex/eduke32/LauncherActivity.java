@@ -34,7 +34,6 @@ import java.util.Locale;
 import java.util.zip.CRC32;
 
 public final class LauncherActivity extends Activity {
-    private static final int PICK_GAME_DATA = 1001;
     private static final int PICK_GAME_FOLDER = 1002;
     private static final int PICK_SAVE_FOLDER = 1003;
     private File gameData;
@@ -552,8 +551,6 @@ public final class LauncherActivity extends Activity {
         content.addView(status, new LinearLayout.LayoutParams(-1, -2));
 
         addLauncherAction(content, "GAME", "Game preset", preset.title, () -> choosePreset(), surface, textPrimary, textSecondary, blue, density);
-        if (preset == GamePreset.DUKE3D)
-            addLauncherAction(content, "GRP", "Choose game data", "Select your DUKE3D.GRP", () -> chooseGameData(), surface, textPrimary, textSecondary, blue, density);
         addLauncherAction(content, "MOD", "Game folder & mods", (preset == GamePreset.BLOODCM ? "Select the folder containing BloodCM.grp and blcons" : "Manage game files and custom content"), () -> chooseGameFolder(), surface, textPrimary, textSecondary, blue, density);
         File[] batchScripts = listBatchScripts(directFolder);
         if (batchScripts != null && batchScripts.length > 0)
@@ -945,13 +942,6 @@ public final class LauncherActivity extends Activity {
         }
     }
 
-    private void chooseGameData() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        startActivityForResult(intent, PICK_GAME_DATA);
-    }
-
     private void chooseImportedFolder() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         startActivityForResult(intent, PICK_GAME_FOLDER);
@@ -1028,9 +1018,7 @@ public final class LauncherActivity extends Activity {
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        if (requestCode == PICK_GAME_DATA) {
-            importGameData(uri);
-        } else if (requestCode == PICK_GAME_FOLDER || requestCode == PICK_SAVE_FOLDER) {
+        if (requestCode == PICK_GAME_FOLDER || requestCode == PICK_SAVE_FOLDER) {
             try {getContentResolver().takePersistableUriPermission(uri,data.getFlags()
                     &(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION));}
             catch(Exception error) {Toast.makeText(this,"Cannot retain folder access: "+error.getMessage(),Toast.LENGTH_LONG).show();return;}
@@ -1046,29 +1034,6 @@ public final class LauncherActivity extends Activity {
                         runOnUiThread(()->Toast.makeText(this,"Save folder error: "+error.getMessage(),Toast.LENGTH_LONG).show());}
                 },"save-folder-select").start();
             }
-        }
-    }
-
-    private void importGameData(Uri uri) {
-        String displayName = getDisplayName(uri);
-        if (displayName == null || !displayName.toLowerCase(Locale.ROOT).endsWith(".grp")) {
-            Toast.makeText(this, "Select a .GRP game data file", Toast.LENGTH_LONG).show();
-            return;
-        }
-        File configDir = gameData.getParentFile();
-        if (!configDir.isDirectory() && !configDir.mkdirs()) {
-            Toast.makeText(this, "Could not create game data folder", Toast.LENGTH_LONG).show();
-            return;
-        }
-        try (InputStream input = getContentResolver().openInputStream(uri);
-             FileOutputStream output = new FileOutputStream(gameData)) {
-            if (input == null) throw new IllegalStateException("Cannot open selected file");
-            copy(input, output);
-            gameDirMarker.delete();
-            DirectGameStorage.marker(this,preset).delete();
-            showLauncher();
-        } catch (Exception error) {
-            Toast.makeText(this, "Could not copy GRP: " + error.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 

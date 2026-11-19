@@ -49,6 +49,7 @@ public final class GameActivity extends SDLActivity {
     private static native void nativeReset();
     private static native int nativeTouchMode();
     private static native void nativeCustomAction(int action, boolean down);
+    static native String[] nativeGameFunctions();
     private static native void nativeMapZoom(float scale);
     private static native void nativeMapPan(float dx, float dy);
     private static native void nativeMapRotate(float radians);
@@ -234,15 +235,26 @@ public final class GameActivity extends SDLActivity {
 
     @Override
     public void onBackPressed() {
+        sendMenuBack();
+    }
+
+    @Override protected boolean handleKeyboardBack() {
+        if (mBrokenLibraries || nativeTouchMode() != TouchControls.TOUCH_CONSOLE) return false;
+        sendMenuBack();
+        return true;
+    }
+
+    private void sendMenuBack() {
         if (controlLayout != null) {
             closeControlLayout();
             return;
         }
-        sendMenuBack();
-    }
-
-    private void sendMenuBack() {
         if(mBrokenLibraries) { finish();return; }
+        if (nativeTouchMode() == TouchControls.TOUCH_CONSOLE) {
+            nativeAction(18, true); // Escape closes the native console.
+            nativeAction(18, false);
+            return;
+        }
         android.util.Log.i("EDuke32", "Android Back requested");
         nativeAction(ACTION_MENU_BACK, true);
         mainHandler.postDelayed(() -> nativeAction(ACTION_MENU_BACK, false), 100);
@@ -333,16 +345,15 @@ public final class GameActivity extends SDLActivity {
         private static final int BUTTON_COUNT=8;
         private static final int CUSTOM_BASE=32;
         private java.util.ArrayList<CustomTouchButtons.Button> customButtons = new java.util.ArrayList<>();
+        private String[] gameFunctions;
         private final android.graphics.Paint customPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private static final int TOUCH_GAME = 5, TOUCH_AUTOMAP = 6, TOUCH_CONSOLE = 7, TOUCH_USERMAP = 8;
         private static final int[] GAME_ICONS = ControlLayoutView.EXTRA_ICONS;
         private static final int[] MAP_ICONS = {ControlArtwork.PARENT_FOLDER,
                 ControlArtwork.UP, ControlArtwork.DOWN, ControlArtwork.START};
-        private static final int[] CONSOLE_ICONS = {ControlArtwork.CONSOLE};
         private static final int[] AUTOMAP_ICONS = {ControlArtwork.MAP};
         private static final int[] GAME_ACTIONS = {13, 14, 15, 16};
         private static final int[] MAP_ACTIONS = {17, ACTION_MENU_UP, ACTION_MENU_DOWN, ACTION_MENU_SELECT};
-        private static final int[] CONSOLE_ACTIONS = {16};
         private static final int[] AUTOMAP_ACTIONS = {15};
         private final android.view.ScaleGestureDetector mapScale;
         private final SparseArray<Integer> keyPointers = new SparseArray<>();
@@ -381,6 +392,7 @@ public final class GameActivity extends SDLActivity {
                 cancelPointers();
                 inputMode = mode;
                 gameInputMode = mode == TOUCH_GAME;
+                if (gameInputMode) gameFunctions = nativeGameFunctions();
                 // Keep the overlay attached to preserve the software SurfaceView.
                 invalidate();
             }
@@ -411,13 +423,14 @@ public final class GameActivity extends SDLActivity {
             return Math.max(42f, Math.min(getWidth(), getHeight()) * .078f) * button.size;
         }
         private void setButton(int role, boolean down) {
-            if (role >= CUSTOM_BASE) nativeCustomAction(customButtons.get(role - CUSTOM_BASE).action, down);
+            if (role >= CUSTOM_BASE) nativeCustomAction(customButtons.get(role - CUSTOM_BASE).resolve(gameFunctions), down);
             else if (role == ACTION_FIRE) activity.setFireSource(false, down);
             else nativeAction(role, down);
         }
         private int hitButton(float x,float y) {
             for (int i = customButtons.size() - 1; i >= 0; i--) {
                 CustomTouchButtons.Button button = customButtons.get(i);
+                if (button.resolve(gameFunctions) < 0) continue;
                 float dx = x - button.x * getWidth(), dy = y - button.y * getHeight();
                 float radius = customRadius(button);
                 if (dx * dx + dy * dy <= radius * radius) return CUSTOM_BASE + i;
@@ -511,7 +524,7 @@ public final class GameActivity extends SDLActivity {
             }
             if (inputMode == TOUCH_USERMAP)
                 return getWidth() * (index == 0 ? .14f : index == 3 ? .89f : .77f);
-            return getWidth() * (inputMode == TOUCH_CONSOLE ? .91f : .16f + index * .105f);
+            return getWidth() * (.16f + index * .105f);
         }
         private float keyY(int index) {
             if (gameInputMode || inputMode == TOUCH_AUTOMAP) {
@@ -520,7 +533,7 @@ public final class GameActivity extends SDLActivity {
             }
             if (inputMode == TOUCH_USERMAP)
                 return getHeight() * (index == 1 ? .56f : index == 2 ? .83f : .72f);
-            return getHeight() * (inputMode == TOUCH_CONSOLE ? .59f : .13f);
+            return getHeight() * .13f;
         }
         private float keyRadius(int index) {
             float radius = Math.min(getWidth(), getHeight()) * .048f;
@@ -531,12 +544,12 @@ public final class GameActivity extends SDLActivity {
         private int[] keyActions() {
             return inputMode == TOUCH_USERMAP ? MAP_ACTIONS
                     : inputMode == TOUCH_AUTOMAP ? AUTOMAP_ACTIONS
-                    : inputMode == TOUCH_CONSOLE ? CONSOLE_ACTIONS : GAME_ACTIONS;
+                    : GAME_ACTIONS;
         }
         private void drawKeys(Canvas canvas) {
             int[] icons = inputMode == TOUCH_USERMAP ? MAP_ICONS
                     : inputMode == TOUCH_AUTOMAP ? AUTOMAP_ICONS
-                    : inputMode == TOUCH_CONSOLE ? CONSOLE_ICONS : GAME_ICONS;
+                    : GAME_ICONS;
             int[] actions = keyActions();
             for (int i = 0; i < icons.length; i++)
                 artwork.button(canvas, keyX(i), keyY(i), keyRadius(i), icons[i],
@@ -573,7 +586,7 @@ public final class GameActivity extends SDLActivity {
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (gameInputMode || inputMode == TOUCH_AUTOMAP || inputMode == TOUCH_USERMAP || inputMode == TOUCH_CONSOLE) drawKeys(canvas);
+            if (gameInputMode || inputMode == TOUCH_AUTOMAP || inputMode == TOUCH_USERMAP) drawKeys(canvas);
             if (!gameInputMode) return;
             if(held(MOVE)) artwork.stick(canvas,moveX,moveY,moveRadius,moveAxisX,moveAxisY,true);
             // Only an active touch displays the floating camera stick.
@@ -582,7 +595,8 @@ public final class GameActivity extends SDLActivity {
                 if (i != LEGACY_SATCHEL_SLOT) artwork.button(canvas,xs[i],ys[i],buttonRadius(i),i,held(i));
             for (int i = 0; i < customButtons.size(); i++) {
                 CustomTouchButtons.Button button = customButtons.get(i);
-                CustomTouchButtons.draw(canvas, customPaint, button, button.x * getWidth(),
+                if (button.resolve(gameFunctions) < 0) continue;
+                CustomTouchButtons.draw(canvas, customPaint, artwork, button, button.x * getWidth(),
                         button.y * getHeight(), customRadius(button), held(CUSTOM_BASE + i));
             }
         }
@@ -641,7 +655,8 @@ public final class GameActivity extends SDLActivity {
                 handleMapTouch(event);
                 return true;
             }
-            if ((gameInputMode || inputMode == TOUCH_USERMAP || inputMode == TOUCH_CONSOLE) && handleKeys(event))
+            if (inputMode == TOUCH_CONSOLE) return true;
+            if ((gameInputMode || inputMode == TOUCH_USERMAP) && handleKeys(event))
                 return true;
             if (!gameInputMode) { return mSurface!=null && mSurface.dispatchTouchEvent(event);
             }

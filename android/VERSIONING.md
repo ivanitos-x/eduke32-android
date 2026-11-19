@@ -436,3 +436,13 @@ certificate differs from the release certificate.
 
 Gradle release build and APK signature verification passed.
 APK SHA-256: 285cd8da13460c85d708d1877cc7d0bf43e03913ef023ddb4f79fc0db45800c7.
+
+## 0.7.1 (code 72)
+
+- Support mod-defined touch bindings and add an alternate-fire icon.
+- Replace the game folder picker and remove the standalone GRP picker.
+- Accept _eduke32 in PC launch scripts.
+- Open the keyboard with the console, add horizontal margins, and restore gameplay controls on Back.
+- Add God Mode, Freeze AI, Unlimited Ammo, and NoClip toggles to Android Cheats.
+
+APK SHA-256: 66158944dfcf86460f84f3fa0a1938b1a7f9ed039bbe9929e29e4787f3b19a6a

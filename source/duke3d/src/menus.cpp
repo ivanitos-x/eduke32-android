@@ -813,9 +813,23 @@ static MenuEntry_t *MEL_CONTROLS[] = {
 #endif
 };
 
+#ifdef __ANDROID__
+static int32_t androidGodMode;
+static int32_t androidNoClip;
+static MenuOption_t MEO_CHEATS_GOD = MAKE_MENUOPTION(&MF_Redfont, &MEOS_NoYes, &androidGodMode);
+static MenuOption_t MEO_CHEATS_FREEZE = MAKE_MENUOPTION(&MF_Redfont, &MEOS_NoYes, &g_freezeEnemyAI);
+static MenuOption_t MEO_CHEATS_AMMO = MAKE_MENUOPTION(&MF_Redfont, &MEOS_NoYes, &g_unlimitedAmmo);
+static MenuEntry_t ME_CHEATS_GOD = MAKE_MENUENTRY("God Mode", &MF_Redfont, &MEF_BigOptionsRt, &MEO_CHEATS_GOD, Option);
+static MenuEntry_t ME_CHEATS_FREEZE = MAKE_MENUENTRY("Freeze AI", &MF_Redfont, &MEF_BigOptionsRt, &MEO_CHEATS_FREEZE, Option);
+static MenuEntry_t ME_CHEATS_AMMO = MAKE_MENUENTRY("Unlimited Ammo", &MF_Redfont, &MEF_BigOptionsRt, &MEO_CHEATS_AMMO, Option);
+static MenuOption_t MEO_CHEATS_NOCLIP = MAKE_MENUOPTION(&MF_Redfont, &MEOS_NoYes, &androidNoClip);
+static MenuEntry_t ME_CHEATS_NOCLIP = MAKE_MENUENTRY("NoClip", &MF_Redfont, &MEF_BigOptionsRt, &MEO_CHEATS_NOCLIP, Option);
+static MenuEntry_t *MEL_CHEATS[] = { &ME_CHEATS_GOD, &ME_CHEATS_FREEZE, &ME_CHEATS_AMMO, &ME_CHEATS_NOCLIP };
+#else
 static MenuEntry_t *MEL_CHEATS[ARRAY_SIZE(ME_CheatCodes)+1] = {
     &ME_ENTERCHEAT,
 };
+#endif
 
 static MenuEntry_t *MEL_VIDEOSETUP[] = {
     &ME_VIDEOSETUP_RESOLUTION,
@@ -2286,8 +2300,10 @@ void Menu_Init(void)
         ME_NETOPTIONS_MONSTERS.name = "Enemies";
 
     // prepare cheats
+#ifndef __ANDROID__
     for (i = 0; i < NUMCHEATFUNCS; ++i)
         MEL_CHEATS[i+1] = &ME_CheatCodes[i];
+#endif
 
     // prepare text chat macros
     for (i = 0; i < MAXRIDECULE; ++i)
@@ -2819,6 +2835,15 @@ static void Menu_Pre(MenuID_t cm)
         break;
 
     case MENU_CHEATS:
+#ifdef __ANDROID__
+        androidGodMode = ud.god != 0;
+        androidNoClip = ud.noclip != 0;
+        for (auto *entry : MEL_CHEATS)
+            MenuEntry_DisableOnCondition(entry, numplayers != 1 || g_netServer || !(g_player[myconnectindex].ps->gm & MODE_GAME)
+                                         || ((entry == &ME_CHEATS_GOD || entry == &ME_CHEATS_NOCLIP)
+                                             && !FURY && ud.player_skill == 4));
+        break;
+#endif
     case MENU_CHEATENTRY:
     case MENU_CHEAT_WARP:
     case MENU_CHEAT_SKILL:
@@ -3981,6 +4006,7 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
 
     case MENU_CHEATS:
     {
+#ifndef __ANDROID__
         const int32_t cheatFuncID = M_CHEATS.currentEntry - 1;
         switch (cheatFuncID)
         {
@@ -3992,6 +4018,7 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
                 Menu_DoCheat(CheatFunctionIDs[cheatFuncID]);
                 break;
         }
+#endif
         break;
     }
 
@@ -4146,6 +4173,14 @@ static int32_t Menu_EntryOptionModify(MenuEntry_t *entry, int32_t newOption)
 {
     int32_t x;
     auto ps = g_player[myconnectindex].ps;
+#ifdef __ANDROID__
+    if (entry == &ME_CHEATS_GOD && newOption != (ud.god != 0))
+        Menu_DoCheat(CHEAT_CORNHOLIO);
+    if (entry == &ME_CHEATS_NOCLIP && newOption != (ud.noclip != 0))
+        Menu_DoCheat(CHEAT_CLIP);
+    if (entry == &ME_CHEATS_AMMO && newOption)
+        G_FillCheatAmmo(true);
+#endif
 
     if (entry == &ME_GAMESETUP_DEMOREC)
     {
